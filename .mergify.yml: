@@ -1,0 +1,27 @@
+queue_rules:
+  - name: dependencies
+    # Empty conditions => rely entirely on each repo's own branch ruleset.
+    # branch_protection_injection_mode defaults to "queue", so each repo's
+    # required checks are injected automatically for both queueing and merging.
+    queue_conditions: []
+    merge_conditions: []
+
+pull_request_rules:
+  - name: Queue Dependency Updates (Dependabot + Scala Steward)
+    conditions:
+      - or:
+          - author = dependabot[bot]
+          - author = shuwari-dev
+    actions:
+      queue:
+        name: dependencies
+
+  - name: Ensure Dependencies Label
+    conditions:
+      - or:
+          - author = dependabot[bot]
+          - author = shuwari-dev
+    actions:
+      label:
+        add:
+          - dependencies

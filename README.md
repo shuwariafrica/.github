@@ -1,1 +1,1 @@
-# .github
+# Shuwari Africa Ltd.
