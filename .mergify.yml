@@ -25,3 +25,50 @@ pull_request_rules:
       label:
         add:
           - dependencies
+
+  # Commit-directive type labels (all-brackets convention: a reserved-keyword
+  # bracket is a TYPE; any other bracket, e.g. [runtime], is a scope, ignored
+  # here). commits[*] with ~= is true if ANY commit matches, so a PR whose
+  # commits are [breaking][feat] + [fix] earns breaking + feature + defect.
+  # Add-only; breaking is a modifier, not a peer. Un-anchored because type tags
+  # stack. sbt-version stays authoritative for the number - these only
+  # approximate the directive grammar.
+  - name: Label breaking changes
+    conditions:
+      - 'commits[*].commit_message ~= (?i)\[(breaking|major)\]'
+    actions:
+      label:
+        add:
+          - breaking
+
+  - name: Label features
+    conditions:
+      - 'commits[*].commit_message ~= (?i)\[(feat|feature|minor)\]'
+    actions:
+      label:
+        add:
+          - feature
+
+  - name: Label fixes
+    conditions:
+      - 'commits[*].commit_message ~= (?i)\[fix\]'
+    actions:
+      label:
+        add:
+          - defect
+
+  - name: Label maintenance
+    conditions:
+      - 'commits[*].commit_message ~= (?i)\[task\]'
+    actions:
+      label:
+        add:
+          - task
+
+  - name: Label dependency commits
+    conditions:
+      - 'commits[*].commit_message ~= (?i)\[dependencies\]'
+    actions:
+      label:
+        add:
+          - dependencies
