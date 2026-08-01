@@ -7,7 +7,7 @@ queue_rules:
     merge_conditions: []
 
 pull_request_rules:
-  - name: Queue Dependency Updates (Dependabot + Scala Steward)
+  - name: Queue Dependency Updates (Dependabot + Renovate + Scala Steward)
     conditions:
       - or:
           - author = dependabot[bot]
