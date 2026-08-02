@@ -27,6 +27,12 @@
       "description": "Scala Steward owns Scala dependencies. Renovate's sbt manager reads the same build definitions and would raise a competing pull request for every one of them.",
       "matchManagers": ["sbt"],
       "enabled": false
+    },
+    {
+      "description": "The JDK in an ecosystem image tag is a deliberate platform pin, not a version to chase. `el10-jdk:21` selects JDK 21, so a bump to `:25` silently changes what a build compiles and tests against; the baseline is decided once for the ecosystem and moved by hand. Version updates are therefore disabled while digest updates stay enabled, so a digest-pinned reference still tracks image rebuilds. Both the bare and registry-qualified names are matched, since a workflow may write either.",
+      "matchPackageNames": ["shuwariafrica/*-jdk", "docker.io/shuwariafrica/*-jdk"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false
     }
   ]
 }
