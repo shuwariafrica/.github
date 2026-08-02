@@ -11,6 +11,17 @@
   "semanticCommits": "disabled",
   "commitMessagePrefix": "[task][dependencies]",
   "automerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Rust toolchain pin. Renovate has no built-in manager for rust-toolchain.toml, and rust-lang/rust carries pre-1.0 tags that sort ahead of the versions wanted, so its GitHub releases are the datasource.",
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   "packageRules": [
     {
       "description": "Scala Steward owns Scala dependencies. Renovate's sbt manager reads the same build definitions and would raise a competing pull request for every one of them.",
