@@ -1,3 +1,7 @@
+merge_queue:
+  mode: isolated
+  max_parallel_checks: 2
+
 queue_rules:
   - name: dependencies
     # Empty conditions => rely entirely on each repo's own branch ruleset.
