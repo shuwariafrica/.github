@@ -28,6 +28,12 @@
       "matchPackageNames": ["shuwariafrica/*-jdk", "docker.io/shuwariafrica/*-jdk"],
       "matchUpdateTypes": ["major", "minor", "patch"],
       "enabled": false
+    },
+    {
+      "description": ".NET SDK (global.json) and the official runtime images move together; a major bump is a deliberate call, not a routine one.",
+      "matchPackageNames": ["dotnet-sdk", "mcr.microsoft.com/dotnet/*"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
     }
   ]
 }

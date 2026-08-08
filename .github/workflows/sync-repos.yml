@@ -1,0 +1,237 @@
+name: Sync repositories
+
+# Repo selection (labels, tooling onboarding, and Dependabot removal all
+# share it) goes in .github/repository-exclusions.md and
+# repository-inclusions.md, not a change here.
+#
+# Two prerequisites this file can't satisfy itself:
+#   - The Shuwari Project Steward App needs `Issues: write` in its own
+#     permission set (org Settings > GitHub Apps > Shuwari Project Steward
+#     > Permissions), installation re-approved org-wide afterwards, for the
+#     labels job. It already has contents/pull-requests write for onboard.
+#   - secrets.SCALA_STEWARD_APP_KEY must hold the App's PEM private key,
+#     not its OAuth client secret - only the private key works with
+#     actions/create-github-app-token.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview changes without applying them
+        type: boolean
+        default: true
+      target:
+        description: Run against a single repo only (owner/repo); empty = every repo
+        type: string
+        required: false
+  schedule:
+    - cron: '17 3 * * *'
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/label-exceptions.yml
+      - .github/repository-exclusions.md
+      - .github/repository-inclusions.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-repos
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.compute.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.SCALA_STEWARD_APP_ID }}
+          private-key: ${{ secrets.SCALA_STEWARD_APP_KEY }}
+          owner: shuwariafrica
+          permission-metadata: read
+
+      - name: Compute managed repository list
+        id: compute
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -uo pipefail
+          # No -e: one repo's contents-API call failing must not abort the
+          # scan of the rest.
+
+          if [ -n "$TARGET" ]; then
+            final="$TARGET"
+          else
+            candidates=$(gh api /installation/repositories --paginate \
+              --jq '.repositories[] | select(.archived == false and .fork == false) | .full_name')
+
+            list_repos() { sed -n 's/^- //p' "$1" 2>/dev/null; }
+            exclusions=$(list_repos .github/repository-exclusions.md)
+            raw_inclusions=$(list_repos .github/repository-inclusions.md)
+
+            # Inclusions bypass the .archived filter above; GitHub rejects
+            # writes to an archived repo regardless.
+            inclusions=""
+            for repo in $raw_inclusions; do
+              [ "$(gh api "repos/$repo" --jq '.archived' 2>/dev/null)" = "true" ] && continue
+              inclusions="$inclusions"$'\n'"$repo"
+            done
+
+            final=$(comm -23 <(sort -u <<< "$candidates") <(sort -u <<< "$exclusions"))
+            final=$(sort -u <<< "$final"$'\n'"$inclusions" | grep -v '^$')
+          fi
+
+          echo "repos=$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<< "$final")" >> "$GITHUB_OUTPUT"
+
+  labels:
+    needs: discover
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.SCALA_STEWARD_APP_ID }}
+          private-key: ${{ secrets.SCALA_STEWARD_APP_KEY }}
+          owner: shuwariafrica
+          permission-issues: write
+          permission-metadata: read
+
+      - name: Sync labels across the org
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          REPOS_JSON: ${{ needs.discover.outputs.repos }}
+        run: |
+          set -uo pipefail
+          # No -e: one repo's failure must not abort the rest of the loop.
+
+          labels=$(yq -o=json '.' .github/labels.yml)
+          names=$(jq -r '.[].name' <<< "$labels")
+          exceptions=$(yq -o=json '.' .github/label-exceptions.yml)
+          repos=$(jq -r '.[]' <<< "$REPOS_JSON")
+
+          for repo in $repos; do
+            echo "::group::$repo"
+
+            jq -r '.[] | [.name, .color, .description] | @tsv' <<< "$labels" |
+              while IFS=$'\t' read -r name color desc; do
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "[dry-run] create/update '$name' on $repo"
+                else
+                  gh label create "$name" --repo "$repo" --color "$color" --description "$desc" --force \
+                    || echo "::warning::failed to create/update '$name' on $repo"
+                fi
+              done
+
+            allowed=$(printf '%s\n' "$names"; jq -r --arg repo "$repo" '.[$repo] // [] | .[]' <<< "$exceptions")
+
+            # -L above gh's default of 30: a repo can carry more labels than
+            # that, and a silent truncation here would mean the delete pass
+            # below never sees the rest.
+            current=$(gh label list --repo "$repo" --json name --jq '.[].name' -L 1000 2>/dev/null) \
+              || { echo "::warning::failed to list labels on $repo"; current=""; }
+            while IFS= read -r existing; do
+              [ -z "$existing" ] && continue
+              if ! grep -qxF "$existing" <<< "$allowed"; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "[dry-run] delete '$existing' from $repo"
+                else
+                  gh label delete "$existing" --repo "$repo" --yes \
+                    || echo "::warning::failed to delete '$existing' from $repo"
+                fi
+              fi
+            done <<< "$current"
+
+            echo "::endgroup::"
+          done
+
+  onboard:
+    needs: discover
+    if: needs.discover.outputs.repos != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJson(needs.discover.outputs.repos) }}
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.SCALA_STEWARD_APP_ID }}
+          private-key: ${{ secrets.SCALA_STEWARD_APP_KEY }}
+          owner: shuwariafrica
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Ensure standard tooling
+        id: onboard
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: |
+          set -uo pipefail
+
+          changed=false
+
+          renovate_exists=false
+          for path in renovate.json renovate.json5 .github/renovate.json .renovaterc.json .renovaterc; do
+            [ -f "$path" ] && renovate_exists=true && break
+          done
+          if [ "$renovate_exists" = "false" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[dry-run] would create .github/renovate.json on ${{ matrix.repo }}"
+            else
+              mkdir -p .github
+              jq -n '{"$schema": "https://docs.renovatebot.com/renovate-schema.json", "extends": ["github>shuwariafrica/.github"]}' \
+                > .github/renovate.json
+              changed=true
+            fi
+          fi
+
+          mergify_exists=false
+          for path in .mergify.yml .mergify/config.yml .github/mergify.yml; do
+            [ -f "$path" ] && mergify_exists=true && break
+          done
+          if [ "$mergify_exists" = "false" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[dry-run] would create .github/mergify.yml on ${{ matrix.repo }}"
+            else
+              mkdir -p .github
+              echo 'extends: .github' > .github/mergify.yml
+              changed=true
+            fi
+          fi
+
+          if [ -f .github/dependabot.yml ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[dry-run] would remove .github/dependabot.yml on ${{ matrix.repo }}"
+            else
+              rm .github/dependabot.yml
+              changed=true
+            fi
+          fi
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - uses: peter-evans/create-pull-request@v8
+        if: steps.onboard.outputs.changed == 'true'
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          commit-message: "[task] Adopt shared Renovate/Mergify tooling"
+          title: "[task] Adopt shared Renovate/Mergify tooling"
+          body: Creates .github/renovate.json and/or .github/mergify.yml pointing at shuwariafrica/.github wherever missing, and removes .github/dependabot.yml if present.
+          branch: sync-repos/adopt-tooling
+          delete-branch: true
