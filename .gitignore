@@ -1,0 +1,8 @@
+.*
+*.md
+
+!.github/
+!.gitattributes
+!.gitignore
+!.mergify.yml
+!README.md

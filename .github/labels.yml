@@ -1,0 +1,61 @@
+# Canonical org-wide label set (handbook 5-org-conventions.md, "Labelling").
+# sync-labels.yml deletes any label not listed here from every repo in the
+# org, so removing an entry deletes that label everywhere on the next run.
+#
+# Type - drives versioning; Mergify applies these on a highest-wins basis
+# (feature > defect > task), breaking is the sole additive exception.
+- name: breaking
+  color: B3131C
+  description: Backwards-incompatible change
+
+- name: feature
+  color: 1F8A47
+  description: New capability (minor version bump)
+
+- name: defect
+  color: D9481F
+  description: Bug fix (patch, no version bump)
+
+- name: task
+  color: 5B5D66
+  description: Maintenance with no functional or version impact
+
+# Ecosystem - scope tags that layer alongside whichever type label wins.
+- name: dependencies
+  color: 1868C4
+  description: Dependency version update
+
+- name: github_actions
+  color: 1B7FA6
+  description: GitHub Actions workflow update
+
+# Triage state.
+- name: blocked
+  color: B8860B
+  description: Blocked on something external
+
+- name: duplicate
+  color: 9AA1AC
+  description: Already reported elsewhere
+
+- name: invalid
+  color: A69324
+  description: Not a valid issue or PR
+
+- name: wontfix
+  color: 767A85
+  description: Acknowledged, will not be addressed
+
+# Community.
+- name: good first issue
+  color: 6A5FD6
+  description: Good for newcomers
+
+- name: help wanted
+  color: 0E7C63
+  description: Extra attention is needed
+
+# Planning.
+- name: epic
+  color: 3F2680
+  description: Large, long-running body of work

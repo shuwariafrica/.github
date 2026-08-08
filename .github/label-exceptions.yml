@@ -1,0 +1,8 @@
+# Labels sync-labels.yml must not delete from the given repo, despite not
+# being in labels.yml. Prefer extending labels.yml instead when a label
+# would plausibly be useful in more than one repo.
+#
+# owner/repo: [label, names, here]
+#
+# Example:
+# shuwariafrica/hedwig: [performance]

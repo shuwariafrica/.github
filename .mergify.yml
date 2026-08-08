@@ -4,16 +4,15 @@ merge_queue:
 
 queue_rules:
   - name: dependencies
-    # Empty conditions => rely entirely on each repo's own branch ruleset.
-    # branch_protection_injection_mode defaults to "queue", so each repo's
-    # required checks are injected automatically for both queueing and merging.
+    # Empty by design: branch_protection_injection_mode (default "queue")
+    # injects each repo's required checks automatically.
     queue_conditions: []
     merge_conditions: []
 
 pull_request_rules:
   - name: Queue Dependency Updates (Dependabot + Renovate + Scala Steward)
     conditions:
-      - or:
+      - or: &bot-authors
           - author = dependabot[bot]
           - author = renovate[bot]
           - author = shuwari-dev
@@ -21,24 +20,7 @@ pull_request_rules:
       queue:
         name: dependencies
 
-  - name: Ensure Dependencies Label
-    conditions:
-      - or:
-          - author = dependabot[bot]
-          - author = renovate[bot]
-          - author = shuwari-dev
-    actions:
-      label:
-        add:
-          - dependencies
-
-  # Commit-directive type labels (all-brackets convention: a reserved-keyword
-  # bracket is a TYPE; any other bracket, e.g. [runtime], is a scope, ignored
-  # here). commits[*] with ~= is true if ANY commit matches, so a PR whose
-  # commits are [breaking][feat] + [fix] earns breaking + feature + defect.
-  # Add-only; breaking is a modifier, not a peer. Un-anchored because type tags
-  # stack. sbt-version stays authoritative for the number - these only
-  # approximate the directive grammar.
+  # breaking is additive: stacks on top of the ladder below, not a rung in it.
   - name: Label breaking changes
     conditions:
       - 'commits[*].commit_message ~= (?i)\[(breaking|major)\]'
@@ -47,34 +29,57 @@ pull_request_rules:
         add:
           - breaking
 
+  # Highest-wins ladder: feature > fix > task > dependencies. Each rule
+  # negates every higher-ranked pattern, so at most one holds at a time.
+  # toggle, not add: a label here is removed once its condition stops
+  # holding, including one added by hand.
   - name: Label features
     conditions:
       - 'commits[*].commit_message ~= (?i)\[(feat|feature|minor)\]'
     actions:
       label:
-        add:
+        toggle:
           - feature
 
   - name: Label fixes
     conditions:
       - 'commits[*].commit_message ~= (?i)\[fix\]'
+      - '-commits[*].commit_message ~= (?i)\[(feat|feature|minor)\]'
     actions:
       label:
-        add:
+        toggle:
           - defect
 
   - name: Label maintenance
     conditions:
       - 'commits[*].commit_message ~= (?i)\[task\]'
+      - '-commits[*].commit_message ~= (?i)\[(feat|feature|minor)\]'
+      - '-commits[*].commit_message ~= (?i)\[fix\]'
     actions:
       label:
-        add:
+        toggle:
           - task
 
-  - name: Label dependency commits
+  # Author is an alternate trigger: bot commits don't reliably carry a
+  # [dependencies] tag.
+  - name: Label dependencies
     conditions:
-      - 'commits[*].commit_message ~= (?i)\[dependencies\]'
+      - or:
+          - 'commits[*].commit_message ~= (?i)\[dependencies\]'
+          - or: *bot-authors
+      - '-commits[*].commit_message ~= (?i)\[(feat|feature|minor)\]'
+      - '-commits[*].commit_message ~= (?i)\[fix\]'
+      - '-commits[*].commit_message ~= (?i)\[task\]'
     actions:
       label:
-        add:
+        toggle:
           - dependencies
+
+  # Not a ladder rung: layers alongside whichever label above wins.
+  - name: Label GitHub Actions updates
+    conditions:
+      - 'files ~= ^\.github/workflows/'
+    actions:
+      label:
+        toggle:
+          - github_actions
