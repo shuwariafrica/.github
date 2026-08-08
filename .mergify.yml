@@ -4,10 +4,15 @@ merge_queue:
 
 queue_rules:
   - name: dependencies
-    # Empty by design: branch_protection_injection_mode (default "queue")
-    # injects each repo's required checks automatically.
+    # branch_protection_injection_mode (default "queue") injects each
+    # repo's required checks automatically, so queue_conditions stays
+    # empty by design. merge_conditions isn't fully empty, though: a repo
+    # with no required checks configured - including one with no workflow
+    # at all - injects nothing, and empty conditions are vacuously true,
+    # so without this floor the queue would merge with zero verification.
     queue_conditions: []
-    merge_conditions: []
+    merge_conditions:
+      - '#check-success >= 1'
 
 pull_request_rules:
   - name: Queue Dependency Updates (Dependabot + Renovate + Scala Steward)
