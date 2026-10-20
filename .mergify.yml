@@ -12,7 +12,11 @@ queue_rules:
     # so without this floor the queue would merge with zero verification.
     queue_conditions: []
     merge_conditions:
-      - '#check-success >= 1'
+      # At least one passing check that is not Mergify's own (Summary, the
+      # queue rule's "Rule: ..." line, "Mergify Merge Queue"): a repository
+      # whose required checks inject nothing still needs real verification,
+      # and Mergify's own check runs never count as it.
+      - 'check-success ~= ^(?!Summary$|Rule: |Mergify Merge Queue$).+'
 
 pull_request_rules:
   - name: Queue Dependency Updates (Dependabot + Renovate + Scala Steward)
