@@ -1,0 +1,61 @@
+name: API commit
+description: >-
+  Commits workspace files to a branch in one commit through the GitHub GraphQL API, so GitHub
+  signs it as the App whose installation token is given. Nothing is committed when no path
+  differs from the branch head.
+
+inputs:
+  token:
+    description: >-
+      Installation token of the committing App, minted by the caller with
+      actions/create-github-app-token. The App's private key never reaches this action.
+    required: true
+  paths:
+    description: >-
+      Workspace-relative files, one per line. A listed path absent from the workspace is deleted
+      on the branch. File modes are not carried: every file lands as a regular file.
+    required: true
+  message:
+    description: Commit message; its first line is the headline.
+    required: true
+  branch:
+    description: Branch to commit to.
+    default: ${{ github.event.repository.default_branch }}
+  repository:
+    description: Repository to commit to, as owner/name.
+    default: ${{ github.repository }}
+
+outputs:
+  changed:
+    description: "`true` when a commit was made."
+    value: ${{ steps.commit.outputs.changed }}
+  commit:
+    description: SHA of the commit made, empty when none was.
+    value: ${{ steps.commit.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    - id: commit
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        API_COMMIT_PATHS: ${{ inputs.paths }}
+        API_COMMIT_MESSAGE: ${{ inputs.message }}
+        API_COMMIT_BRANCH: ${{ inputs.branch }}
+        API_COMMIT_REPOSITORY: ${{ inputs.repository }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const apiCommit = require(`${process.env.GITHUB_ACTION_PATH}/api-commit.js`);
+          const result = await apiCommit({
+            github,
+            readFile: (p) => require('fs').readFileSync(p),
+            exists: (p) => require('fs').existsSync(p),
+            repository: process.env.API_COMMIT_REPOSITORY,
+            branch: process.env.API_COMMIT_BRANCH,
+            paths: process.env.API_COMMIT_PATHS,
+            message: process.env.API_COMMIT_MESSAGE,
+          });
+          core.setOutput('changed', String(result.changed));
+          core.setOutput('commit', result.commit ?? '');
+          core.info(result.changed ? `Committed ${result.commit}` : 'No path differs from the branch head');
