@@ -25,6 +25,7 @@ pull_request_rules:
           - author = dependabot[bot]
           - author = renovate[bot]
           - author = shuwari-dev
+          - author = shuwari-project-steward[bot]
     actions:
       queue:
         name: dependencies
