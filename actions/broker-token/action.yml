@@ -1,0 +1,28 @@
+name: Broker token
+description: An installation token of one of the organisation's GitHub Apps, minted by the token broker for this job's repository and environment.
+inputs:
+  app:
+    description: The App, as the broker's policy names it (release_bot, project_steward, configuration).
+    required: true
+  permissions:
+    description: 'A JSON object of permissions no wider than the grant''s, such as {"contents":"read"}; empty for the grant''s own.'
+    required: false
+    default: ''
+  broker-url:
+    description: The broker's URL, the organisation's TOKEN_BROKER_URL variable unless given.
+    required: false
+    default: ${{ vars.TOKEN_BROKER_URL }}
+outputs:
+  token:
+    description: The installation token, masked in the log; GitHub expires it within one hour.
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - id: mint
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        PERMISSIONS: ${{ inputs.permissions }}
+        BROKER_URL: ${{ inputs.broker-url }}
+      run: '"${GITHUB_ACTION_PATH}/broker-token.sh"'
