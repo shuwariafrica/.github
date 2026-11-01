@@ -1,0 +1,70 @@
+name: Key Vault secret
+description: >-
+  Reads, writes or checks the absence of one Azure Key Vault secret, or hands a tool the vault
+  access token, as the identity the job's environment federates to. The job needs
+  `permissions: id-token: write`; no credential is stored.
+inputs:
+  operation:
+    description: >-
+      `get` (the value into `file`), `set` (`file` as a new version), `absent` (fails when the
+      secret exists) or `token` (the access token into `file`, for a tool that calls the vault
+      itself, as jsign does).
+    required: true
+  tenant-id:
+    description: The Entra tenant.
+    required: true
+  client-id:
+    description: The federated identity's client id.
+    required: true
+  vault-url:
+    description: The vault's URI, e.g. https://shuwari-release-signing.vault.azure.net.
+    required: true
+  secret:
+    description: The secret's name; unused by `token`.
+    required: false
+    default: ""
+  file:
+    description: The file read for `set`, or written, mode 600, for `get` and `token`.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Key Vault secret
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+        TENANT_ID: ${{ inputs.tenant-id }}
+        CLIENT_ID: ${{ inputs.client-id }}
+        VAULT_URL: ${{ inputs.vault-url }}
+        SECRET: ${{ inputs.secret }}
+        FILE: ${{ inputs.file }}
+      run: |
+        set -euo pipefail
+        : "${RUNNER_TEMP:?}" "${GITHUB_ACTION_PATH:?}"
+        [[ ${VAULT_URL} =~ ^https://[a-z0-9-]+\.vault\.azure\.net/?$ ]] || {
+          printf '::error::not a Key Vault URI: %s\n' "${VAULT_URL}"
+          exit 64
+        }
+        token=$(mktemp -p "${RUNNER_TEMP}")
+        trap 'rm -f "${token}"' EXIT
+        "${GITHUB_ACTION_PATH}/token.sh" "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
+          "${CLIENT_ID}" https://vault.azure.net/.default "${token}"
+        # A Key Vault value is no GitHub secret, so the runner masks nothing of it unasked: every
+        # line, and every string of a JSON value, is registered before any later step runs.
+        case "${OPERATION}" in
+          get)
+            "${GITHUB_ACTION_PATH}/get-secret.sh" "${VAULT_URL}" "${SECRET}" "${token}" "${FILE:?}"
+            "${GITHUB_ACTION_PATH}/mask.sh" "${FILE}"
+            ;;
+          set) "${GITHUB_ACTION_PATH}/set-secret.sh" "${VAULT_URL}" "${SECRET}" "${token}" "${FILE:?}" ;;
+          absent) "${GITHUB_ACTION_PATH}/absent.sh" "${VAULT_URL}" "${SECRET}" "${token}" ;;
+          token)
+            install -m 600 "${token}" "${FILE:?}"
+            "${GITHUB_ACTION_PATH}/mask.sh" "${FILE}"
+            ;;
+          *)
+            printf '::error::operation is get, set, absent or token, not %s\n' "${OPERATION}"
+            exit 64
+            ;;
+        esac
