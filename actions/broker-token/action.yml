@@ -9,9 +9,8 @@ inputs:
     required: false
     default: ''
   broker-url:
-    description: The broker's URL, the organisation's TOKEN_BROKER_URL variable unless given.
-    required: false
-    default: ${{ vars.TOKEN_BROKER_URL }}
+    description: The broker's URL, the organisation's variable vars.TOKEN_BROKER_URL, which the caller passes since an action cannot read vars.
+    required: true
 outputs:
   token:
     description: The installation token, masked in the log; GitHub expires it within one hour.
