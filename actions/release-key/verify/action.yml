@@ -1,0 +1,67 @@
+name: Verify release signatures
+description: >-
+  Verifies every <file>.asc under a directory as one signature by C1, under gpg and sqv, each naming
+  the repository and ref of the run that made it. With `gnupghome` and `subkey`, the release-key
+  action's outputs, against the key that home holds: a release job's proof of what it signed
+  (sbt-pgp's publishSigned). Without them, against C1's certificate alone, read from this action's
+  own commit of `.github` (`signing/c1-public.asc`) and merged with what keyserver.ubuntu.com and
+  keys.openpgp.org publish for it: a job that holds no subkey, in `release-read` among others,
+  verifies a release this way, and needs gpg, sqv and curl. Fails when the directory holds no
+  signature.
+inputs:
+  directory:
+    description: The directory holding the signed files and their signatures.
+    required: true
+  repository-ref:
+    description: >-
+      `<repository id>:<ref>` of the run every signature must name, such as
+      `1312037295:refs/tags/v1.2.3`; required without `gnupghome`, and empty with it for signatures
+      made without one (sbt-pgp's).
+    required: false
+    default: ""
+  gnupghome:
+    description: The release-key action's `gnupghome` output, for the home form.
+    required: false
+    default: ""
+  subkey:
+    description: The release-key action's `subkey` output, for the home form.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Verify
+      shell: bash
+      env:
+        RELEASE_HOME: ${{ inputs.gnupghome }}
+        SUBKEY: ${{ inputs.subkey }}
+        DIRECTORY: ${{ inputs.directory }}
+        REPOSITORY_REF: ${{ inputs.repository-ref }}
+        # This step's own env is merged last: what the calling step sets cannot run before bash
+        # starts or reach the loader.
+        BASH_ENV: ""
+        ENV: ""
+        LD_PRELOAD: ""
+      run: |
+        set -euo pipefail
+        : "${DIRECTORY:?}" "${GITHUB_ACTION_PATH:?}" "${RUNNER_TEMP:?}"
+        mapfile -d '' -t signatures < <(find "${DIRECTORY}" -type f -name '*.asc' -print0)
+        (( ${#signatures[@]} > 0 )) || {
+          printf '::error::no signature under %s\n' "${DIRECTORY}"
+          exit 66
+        }
+        scripts="${GITHUB_ACTION_PATH}/.."
+        if [[ -n ${RELEASE_HOME} ]]; then
+          : "${SUBKEY:?the home form takes the subkey too}"
+          "${scripts}/verify.sh" home "${RELEASE_HOME}" "${SUBKEY}" "${REPOSITORY_REF:--}" "${signatures[@]%.asc}"
+        else
+          [[ ${REPOSITORY_REF} =~ ^[1-9][0-9]*:refs/(tags|heads)/[^[:space:]]+$ ]] || {
+            printf '::error::the certificate form takes the <repository id>:<ref> each signature names, not [%s]\n' "${REPOSITORY_REF}"
+            exit 64
+          }
+          # The root of this action's commit of .github: actions/release-key/verify is three below it.
+          certificate="${GITHUB_ACTION_PATH}/../../../signing/c1-public.asc"
+          published=$(mktemp -d -p "${RUNNER_TEMP}")
+          "${scripts}/published.sh" "${certificate}" "${published}"
+          "${scripts}/verify.sh" certificate "${certificate}" "${published}" "${REPOSITORY_REF}" "${signatures[@]%.asc}"
+        fi
