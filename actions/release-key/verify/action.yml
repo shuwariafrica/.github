@@ -30,38 +30,28 @@ inputs:
 runs:
   using: composite
   steps:
+    # The step runs as release-take's does. The shell is the image's bash in POSIX mode, so no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`, and env -i
+    # then hands verify-step.sh only the variables named. The variables cleared below are this
+    # step's own env, which the runner merges last; each is one bash or the loader reads before this
+    # script's first line.
     - name: Verify
-      shell: bash
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
         RELEASE_HOME: ${{ inputs.gnupghome }}
         SUBKEY: ${{ inputs.subkey }}
         DIRECTORY: ${{ inputs.directory }}
         REPOSITORY_REF: ${{ inputs.repository-ref }}
-        # This step's own env is merged last: what the calling step sets cannot run before bash
-        # starts or reach the loader.
         BASH_ENV: ""
         ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
         LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
       run: |
         set -euo pipefail
-        : "${DIRECTORY:?}" "${GITHUB_ACTION_PATH:?}" "${RUNNER_TEMP:?}"
-        mapfile -d '' -t signatures < <(find "${DIRECTORY}" -type f -name '*.asc' -print0)
-        (( ${#signatures[@]} > 0 )) || {
-          printf '::error::no signature under %s\n' "${DIRECTORY}"
-          exit 66
-        }
-        scripts="${GITHUB_ACTION_PATH}/.."
-        if [[ -n ${RELEASE_HOME} ]]; then
-          : "${SUBKEY:?the home form takes the subkey too}"
-          "${scripts}/verify.sh" home "${RELEASE_HOME}" "${SUBKEY}" "${REPOSITORY_REF:--}" "${signatures[@]%.asc}"
-        else
-          [[ ${REPOSITORY_REF} =~ ^[1-9][0-9]*:refs/(tags|heads)/[^[:space:]]+$ ]] || {
-            printf '::error::the certificate form takes the <repository id>:<ref> each signature names, not [%s]\n' "${REPOSITORY_REF}"
-            exit 64
-          }
-          # The root of this action's commit of .github: actions/release-key/verify is three below it.
-          certificate="${GITHUB_ACTION_PATH}/../../../signing/c1-public.asc"
-          published=$(mktemp -d -p "${RUNNER_TEMP}")
-          "${scripts}/published.sh" "${certificate}" "${published}"
-          "${scripts}/verify.sh" certificate "${certificate}" "${published}" "${REPOSITORY_REF}" "${signatures[@]%.asc}"
-        fi
+        exec /usr/bin/env -i PATH=/usr/bin:/bin RUNNER_TEMP="${RUNNER_TEMP:?}" \
+          RELEASE_HOME="${RELEASE_HOME}" SUBKEY="${SUBKEY}" DIRECTORY="${DIRECTORY}" REPOSITORY_REF="${REPOSITORY_REF}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/../verify-step.sh"

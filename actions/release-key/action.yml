@@ -33,46 +33,56 @@ outputs:
 runs:
   using: composite
   steps:
+    # Each step runs as release-take's does. The shell is the image's bash in POSIX mode, so no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`. env -i
+    # then hands the step's script only the variables named, and a token goes on descriptor 3,
+    # never into an argument list. The variables cleared below are this step's own env, which the
+    # runner merges last; each is one bash or the loader reads before this script's first line.
     - name: Import the release key
       id: import
-      shell: bash
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
         TENANT_ID: ${{ inputs.tenant-id }}
         CLIENT_ID: ${{ inputs.client-id }}
         VAULT_URL: ${{ inputs.vault-url }}
         FINGERPRINT: ${{ inputs.fingerprint }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
       run: |
         set -euo pipefail
-        : "${RUNNER_TEMP:?}" "${GITHUB_ACTION_PATH:?}" "${GITHUB_OUTPUT:?}"
-        [[ ${VAULT_URL} =~ ^https://[a-z0-9-]+\.vault\.azure\.net/?$ ]] || {
-          printf '::error::not a Key Vault URI: %s\n' "${VAULT_URL}"
-          exit 64
-        }
-        kv="${GITHUB_ACTION_PATH}/../key-vault"
-        token=$(mktemp -p "${RUNNER_TEMP}")
-        export_file=$(mktemp -p "${RUNNER_TEMP}")
-        trap 'rm -f "${token}" "${export_file}"' EXIT
-        "${kv}/token.sh" "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
-          "${CLIENT_ID}" https://vault.azure.net/.default "${token}"
-        "${kv}/get-secret.sh" "${VAULT_URL}" c1-subkey "${token}" "${export_file}"
-        # A Key Vault value is no GitHub secret, so the runner masks nothing of it unasked: every
-        # line of the export is registered before any later step runs.
-        "${kv}/mask.sh" "${export_file}"
-        home="${RUNNER_TEMP}/release-gnupg"
-        subkey=$("${GITHUB_ACTION_PATH}/import-key.sh" "${export_file}" "${FINGERPRINT}" "${home}")
-        printf 'gnupghome=%s\nsubkey=%s\n' "${home}" "${subkey}" >>"${GITHUB_OUTPUT}"
-        printf 'release key: C1 %s, signing subkey %s\n' "${FINGERPRINT}" "${subkey}"
+        exec 3<<TOKEN
+        ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin \
+          RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
+          ACTIONS_ID_TOKEN_REQUEST_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+          TENANT_ID="${TENANT_ID}" CLIENT_ID="${CLIENT_ID}" VAULT_URL="${VAULT_URL}" FINGERPRINT="${FINGERPRINT}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/import-step.sh"
     - name: Sign
       if: inputs.sign != ''
-      shell: bash
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
         FILES: ${{ inputs.sign }}
         GNUPGHOME: ${{ steps.import.outputs.gnupghome }}
         SUBKEY: ${{ steps.import.outputs.subkey }}
         # This step's own env is merged last, so the calling step cannot name another run.
         REPOSITORY_REF: ${{ github.repository_id }}:${{ github.ref }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
       run: |
         set -euo pipefail
-        : "${GNUPGHOME:?}" "${GITHUB_ACTION_PATH:?}" "${REPOSITORY_REF:?}"
-        mapfile -t files < <(printf '%s\n' "${FILES}" | sed '/^[[:space:]]*$/d')
-        "${GITHUB_ACTION_PATH}/sign.sh" "${GNUPGHOME}" "${SUBKEY}" "${REPOSITORY_REF}" "${files[@]}"
+        exec /usr/bin/env -i PATH=/usr/bin:/bin \
+          FILES="${FILES}" GNUPGHOME="${GNUPGHOME}" SUBKEY="${SUBKEY}" REPOSITORY_REF="${REPOSITORY_REF}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/sign-step.sh"
