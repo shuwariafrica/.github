@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# The broker-token action's step: asks GitHub for this job's OIDC token addressed to the broker, then
-# asks the broker for an installation token of APP, narrowed to PERMISSIONS when given, and writes it
-# masked to the step's `token` output. The job needs `permissions: id-token: write` and an
-# `environment:`; no token passes through an argument list. Exits 1 with the broker's refusal code,
-# and 2 when curl or jq is missing.
+# The broker-token action's step, which action.yml starts under `env -i`: asks GitHub for this job's
+# OIDC token addressed to the broker, then asks the broker for an installation token of APP, narrowed
+# to PERMISSIONS when given, and writes it masked to the step's `token` output. The job needs
+# `permissions: id-token: write` and an `environment:`; no token passes through an argument list.
+# Environment: APP, PERMISSIONS, BROKER_URL, GITHUB_OUTPUT and ACTIONS_ID_TOKEN_REQUEST_URL; the OIDC
+# request token on descriptor 3. Exits 1 with the broker's refusal code, and 2 when curl or jq is
+# missing.
 set -euo pipefail
 
 readonly AUDIENCE=urn:shuwariafrica:token-broker
@@ -16,7 +18,7 @@ fail() {
 }
 
 main() {
-  local tool oidc status refusal token summary
+  local tool oidc status refusal token summary request=''
   for tool in curl jq; do
     command -v "${tool}" >/dev/null 2>&1 || {
       printf '::error title=broker-token::%s is required\n' "${tool}"
@@ -25,7 +27,9 @@ main() {
   done
   : "${APP:?the app input of the action}"
   [[ -n "${BROKER_URL:-}" ]] || fail "no broker URL: pass broker-url, the organisation variable vars.TOKEN_BROKER_URL"
-  [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] ||
+  IFS= read -r -u 3 request || [[ -n ${request} ]] || fail "no OIDC request token on descriptor 3"
+  exec 3<&-
+  [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${request}" ]] ||
     fail "this job cannot request an OIDC token: it needs permissions: id-token: write"
   : "${GITHUB_OUTPUT:?the step output file of the runner}"
 
@@ -33,7 +37,8 @@ main() {
   trap 'rm -rf -- "${work}"' EXIT
   umask 077
 
-  printf 'Authorization: bearer %s\n' "${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" >"${work}/request-header"
+  printf 'Authorization: bearer %s\n' "${request}" >"${work}/request-header"
+  unset request
   curl -fsS --max-time "${TIMEOUT_SECONDS}" -H @"${work}/request-header" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" >"${work}/oidc.json" ||
     fail "GitHub refused this job an OIDC token"
   oidc=$(jq -er '.value | select(type == "string" and length > 0)' "${work}/oidc.json") ||

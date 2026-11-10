@@ -15,6 +15,8 @@ set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly here
+# shellcheck source=tests/step.sh
+. "${here}/../step.sh"
 tree=$(cd -- "${here}/../.." && pwd)
 cases=()
 while (($# > 0)); do
@@ -100,35 +102,12 @@ fresh() { # case name: prints its directory
   printf '%s\n' "${directory}"
 }
 
-declare -A input=()
-caller=()
+declare -A input=() over=()
+caller=() runner=()
 
-# Runs verify/action.yml's step in <directory> as the runner would; leaves status, stdout, stderr.
-verify() { # case directory
-  local directory=$1 action="${tree}/actions/release-key/verify/action.yml" shell line key value expression status
-  local -a lines step words
-  shell=$(yq -r '.runs.steps[0].shell' "${action}")
-  yq -r '.runs.steps[0].run' "${action}" >"${directory}/step.sh"
-  line=$(yq -r '.runs.steps[0].env | to_entries | .[] | .key + "=" + (.value | @json)' "${action}")
-  mapfile -t lines <<<"${line}"
-  step=()
-  for line in "${lines[@]}"; do
-    key=${line%%=*}
-    value=$(jq -r . <<<"${line#*=}")
-    while [[ ${value} =~ \$\{\{\ inputs\.([a-z-]+)\ \}\} ]]; do
-      expression=${BASH_REMATCH[0]}
-      value=${value/"${expression}"/"${input[${BASH_REMATCH[1]}]}"}
-    done
-    step+=("${key}=${value}")
-  done
-  # The runner's own template for `shell: bash`; any other shell is a command line of its own.
-  [[ ${shell} != bash ]] || shell='bash --noprofile --norc -e -o pipefail {0}'
-  read -r -a words <<<"${shell//\{0\}/${directory}/step.sh}"
-  status=0
-  env -i "${caller[@]}" "${step[@]}" RUNNER_TEMP="${directory}/temp" \
-    GITHUB_ACTION_PATH="${tree}/actions/release-key/verify" "${words[@]}" \
-    >"${directory}/stdout" 2>"${directory}/stderr" || status=$?
-  printf '%s\n' "${status}" >"${directory}/status"
+verify() { # case directory: verify's step, as the runner runs it
+  runner=("RUNNER_TEMP=$1/temp" "GITHUB_ACTION_PATH=${tree}/actions/release-key/verify")
+  step "${tree}/actions/release-key/verify/action.yml" 0 "$1"
 }
 
 fail() {

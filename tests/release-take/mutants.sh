@@ -138,8 +138,8 @@ mutant i8_consumer_core_keys "${t}" 'certificates="${root}/signing/core-keys"' '
 mutant i8_no_c1 "${t}" '[[ -f ${C1} ]] ||' 'true ||'
 mutant i8_no_core_keys "${t}" '[[ -f ${keys[0]} ]] ||' 'true ||'
 # Item 9: the tools fixed by digest.
-mutant i9_gh_digest "${o}" '"${work}/gh.tar.gz" | sha256sum --check --strict --status ||' '"${work}/gh.tar.gz" | true ||'
-mutant i9_sqv_digest "${o}" '"${work}/sqv.deb" | sha256sum --check --strict --status ||' '"${work}/sqv.deb" | true ||'
+mutant i9_gh_digest "${o}" '"${work}/gh.tar.gz" | sha256sum --check --strict --status ||' '"${work}/gh.tar.gz" | cat >/dev/null ||'
+mutant i9_sqv_digest "${o}" '"${work}/sqv.deb" | sha256sum --check --strict --status ||' '"${work}/sqv.deb" | cat >/dev/null ||'
 # Item 10: names confined.
 mutant i10_name_slash "${t}" '[[ -n $1 && $1 != */* && $1 != *..* &&' '[[ -n $1 && $1 != *..* &&'
 mutant i10_name_dots "${t}" '[[ -n $1 && $1 != */* && $1 != *..* &&' '[[ -n $1 && $1 != */* &&'

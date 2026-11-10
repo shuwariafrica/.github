@@ -30,8 +30,13 @@ inputs:
 runs:
   using: composite
   steps:
+    # The shell is the image's bash in POSIX mode, so no function a caller exports
+    # (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`. env -i then hands the step's script
+    # only the variables named, and the OIDC request token goes on descriptor 3, never into an
+    # argument list. The variables cleared below are this step's own env, which the runner merges
+    # last; each is one bash or the loader reads before this script's first line.
     - name: Key Vault secret
-      shell: bash
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
         OPERATION: ${{ inputs.operation }}
         TENANT_ID: ${{ inputs.tenant-id }}
@@ -39,32 +44,21 @@ runs:
         VAULT_URL: ${{ inputs.vault-url }}
         SECRET: ${{ inputs.secret }}
         FILE: ${{ inputs.file }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
       run: |
         set -euo pipefail
-        : "${RUNNER_TEMP:?}" "${GITHUB_ACTION_PATH:?}"
-        [[ ${VAULT_URL} =~ ^https://[a-z0-9-]+\.vault\.azure\.net/?$ ]] || {
-          printf '::error::not a Key Vault URI: %s\n' "${VAULT_URL}"
-          exit 64
-        }
-        token=$(mktemp -p "${RUNNER_TEMP}")
-        trap 'rm -f "${token}"' EXIT
-        "${GITHUB_ACTION_PATH}/token.sh" "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
-          "${CLIENT_ID}" https://vault.azure.net/.default "${token}"
-        # A Key Vault value is no GitHub secret, so the runner masks nothing of it unasked: every
-        # line, and every string of a JSON value, is registered before any later step runs.
-        case "${OPERATION}" in
-          get)
-            "${GITHUB_ACTION_PATH}/get-secret.sh" "${VAULT_URL}" "${SECRET}" "${token}" "${FILE:?}"
-            "${GITHUB_ACTION_PATH}/mask.sh" "${FILE}"
-            ;;
-          set) "${GITHUB_ACTION_PATH}/set-secret.sh" "${VAULT_URL}" "${SECRET}" "${token}" "${FILE:?}" ;;
-          absent) "${GITHUB_ACTION_PATH}/absent.sh" "${VAULT_URL}" "${SECRET}" "${token}" ;;
-          token)
-            install -m 600 "${token}" "${FILE:?}"
-            "${GITHUB_ACTION_PATH}/mask.sh" "${FILE}"
-            ;;
-          *)
-            printf '::error::operation is get, set, absent or token, not %s\n' "${OPERATION}"
-            exit 64
-            ;;
-        esac
+        exec 3<<TOKEN
+        ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin RUNNER_TEMP="${RUNNER_TEMP:?}" \
+          ACTIONS_ID_TOKEN_REQUEST_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+          OPERATION="${OPERATION}" TENANT_ID="${TENANT_ID}" CLIENT_ID="${CLIENT_ID}" VAULT_URL="${VAULT_URL}" \
+          SECRET="${SECRET}" FILE="${FILE}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/key-vault.sh"

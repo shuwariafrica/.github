@@ -16,6 +16,8 @@ set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly here
+# shellcheck source=tests/step.sh
+. "${here}/../step.sh"
 tree=$(cd -- "${here}/../.." && pwd)
 fixtures=''
 cases=()
@@ -55,8 +57,6 @@ yq_version=$(yq --version)
 readonly ID=1295027104 REPOSITORY=shuwariafrica/azkaban TAG=v1.2.3 WORKFLOW=.github/workflows/gate.yml
 readonly COMMIT=3f786850e387550fdab836ed7e6dc881de23001b OBJECT=89e6c98d92887913cadf06b2adb97f26cde4849b
 readonly TOKEN=take-token
-# shellcheck disable=SC2016 # the opening of a GitHub expression, as text
-readonly EXPRESSION='${{'
 readonly ACTION="${tree}/actions/release-take/action.yml"
 
 owned=''
@@ -257,7 +257,7 @@ world() { # case name: prints the case directory
 # What a case gives the take, beside its world.
 declare -A input=()
 declare -A over=()
-caller=()
+caller=() runner=()
 
 reset() {
   input=(["repository-id"]="${ID}" [tag]="${TAG}" [workflow]="${WORKFLOW}" [path]=members/core [token]="${TOKEN}")
@@ -271,39 +271,13 @@ reset() {
 # Runs action.yml's step in <directory>'s world as the runner would; leaves status, stdout and
 # stderr in the directory.
 take() { # case directory
-  local directory=$1 shell script key value line status
-  local -a step words lines
+  local directory=$1
   ln -sfn -- "${directory}" "${fixtures}/current"
   : >"${directory}/github/calls"
   : >"${directory}/github/env"
-  shell=$(yq -r '.runs.steps[0].shell' "${directory}/tree/actions/release-take/action.yml")
-  yq -r '.runs.steps[0].run' "${directory}/tree/actions/release-take/action.yml" >"${directory}/step.sh"
-  script="${directory}/step.sh"
-  line=$(yq -r '.runs.steps[0].env | to_entries | .[] | .key + "=" + (.value | @json)' "${directory}/tree/actions/release-take/action.yml")
-  mapfile -t lines <<<"${line}"
-  step=()
-  for line in "${lines[@]}"; do
-    key=${line%%=*}
-    value=$(jq -r . <<<"${line#*=}")
-    if [[ -n ${over[${key}]+set} ]]; then
-      value=${over[${key}]}
-    elif [[ ${value} =~ ^\$\{\{\ inputs\.([a-z-]+)\ \}\}$ ]]; then
-      value=${input[${BASH_REMATCH[1]}]}
-    elif [[ ${value} == *"${EXPRESSION}"* ]]; then
-      printf 'run.sh: the step env holds %s, which this harness does not stand in for\n' "${line}" >&2
-      exit 70
-    fi
-    step+=("${key}=${value}")
-  done
-  # The runner's own template for `shell: bash`; any other shell is a command line of its own.
-  [[ ${shell} != bash ]] || shell='bash --noprofile --norc -e -o pipefail {0}'
-  read -r -a words <<<"${shell//\{0\}/${script}}"
-  status=0
-  (cd "${directory}/workspace" && env -i "${caller[@]}" "${step[@]}" RUNNER_TEMP="${directory}/temp" \
-    GITHUB_OUTPUT="${directory}/output" GITHUB_WORKSPACE="${directory}/workspace" \
-    GITHUB_ACTION_PATH="${directory}/tree/actions/release-take" "${words[@]}") \
-    >"${directory}/stdout" 2>"${directory}/stderr" || status=$?
-  printf '%s\n' "${status}" >"${directory}/status"
+  runner=("RUNNER_TEMP=${directory}/temp" "GITHUB_OUTPUT=${directory}/output" "GITHUB_WORKSPACE=${directory}/workspace"
+    "GITHUB_ACTION_PATH=${directory}/tree/actions/release-take")
+  step "${directory}/tree/actions/release-take/action.yml" 0 "${directory}" "${directory}/workspace"
 }
 
 # Assertions: each prints why it failed and returns 1.

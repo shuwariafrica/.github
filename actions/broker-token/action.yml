@@ -18,10 +18,31 @@ outputs:
 runs:
   using: composite
   steps:
+    # The shell is the image's bash in POSIX mode, so no function a caller exports
+    # (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`. env -i then hands the step's script
+    # only the variables named, and the OIDC request token goes on descriptor 3, never into an
+    # argument list. The variables cleared below are this step's own env, which the runner merges
+    # last; each is one bash or the loader reads before this script's first line.
     - id: mint
-      shell: bash
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
         APP: ${{ inputs.app }}
         PERMISSIONS: ${{ inputs.permissions }}
         BROKER_URL: ${{ inputs.broker-url }}
-      run: '"${GITHUB_ACTION_PATH}/broker-token.sh"'
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+      run: |
+        set -euo pipefail
+        exec 3<<TOKEN
+        ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
+          ACTIONS_ID_TOKEN_REQUEST_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+          APP="${APP}" PERMISSIONS="${PERMISSIONS}" BROKER_URL="${BROKER_URL}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/broker-token.sh"

@@ -36,6 +36,11 @@ outputs:
 runs:
   using: composite
   steps:
+    # The runner starts github-script's node, which runs no bash, so an exported function does not
+    # reach it; the loader's variables do, before node reads a line, and could load a library into
+    # the process that holds the token. This step's own env is merged last, so the caller's
+    # LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT stop here; bash's are cleared as every step here
+    # clears them.
     - id: commit
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
@@ -43,6 +48,14 @@ runs:
         API_COMMIT_MESSAGE: ${{ inputs.message }}
         API_COMMIT_BRANCH: ${{ inputs.branch }}
         API_COMMIT_REPOSITORY: ${{ inputs.repository }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
       with:
         github-token: ${{ inputs.token }}
         script: |
