@@ -1,0 +1,81 @@
+name: Take a release
+description: >-
+  Takes one release of another repository the release gate guards into `path` in the workspace,
+  after proving in the job that it is that repository's release at `tag`: the tag signed by an
+  admitted core key, SHA256SUMS signed by C1 for that repository and tag, and every file attested by
+  `workflow` at the tag's commit on a GitHub-hosted runner. Nothing reaches `path`, and `commit` is
+  not set, unless every proof passes. Its roots are `signing/c1-public.asc` and
+  `signing/core-keys/` at this action's own commit, and its gh and sqv are fixed by digest. Linux
+  runners, x64 or arm64.
+inputs:
+  repository-id:
+    description: The source repository's id, decimal with no sign or leading zero.
+    required: true
+  tag:
+    description: The release's tag, exactly; never empty, which gh would read as the latest release.
+    required: true
+  workflow:
+    description: >-
+      The source's workflow that attested the release, `.github/workflows/<name>.yml` or `.yaml`.
+    required: true
+  path:
+    description: >-
+      A new directory under the workspace for the release's files, SHA256SUMS and SHA256SUMS.asc
+      among them: directories none `.` or `..`, the first not `.github`.
+    required: true
+  token:
+    description: A token that reads the source repository's contents and attestations.
+    required: true
+outputs:
+  commit:
+    description: >-
+      The commit the verified tag names, 40 lower-case hexadecimal digits; set only when every proof
+      passed.
+    value: ${{ steps.take.outputs.commit }}
+runs:
+  using: composite
+  steps:
+    # The shell is the image's own bash in POSIX mode, so no `bash` on PATH runs this and no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`; env -i then
+    # hands take.sh none of the caller's environment, and the token goes on descriptor 3, never into
+    # an argument list. The variables below are this step's own env, which the runner merges last;
+    # each is one bash or the loader reads before this script's first line.
+    - name: Take the release
+      id: take
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        TAKE_REPOSITORY_ID: ${{ inputs.repository-id }}
+        TAKE_TAG: ${{ inputs.tag }}
+        TAKE_WORKFLOW: ${{ inputs.workflow }}
+        TAKE_PATH: ${{ inputs.path }}
+        TAKE_TOKEN: ${{ inputs.token }}
+        # gh 2.103.3's release archives, the digests its gh_2.103.3_checksums.txt publishes.
+        TAKE_GH_URL: https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}.tar.gz
+        TAKE_GH_SHA256: ${{ runner.arch == 'ARM64' && 'ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63' || '4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d' }}
+        # sqv 1.3.0-3ubuntu1 from Ubuntu 26.04's release pocket, the digests its signed index states.
+        TAKE_SQV_URL: ${{ runner.arch == 'ARM64' && 'https://ports.ubuntu.com/ubuntu-ports/pool/universe/r/rust-sequoia-sqv/sqv_1.3.0-3ubuntu1_arm64.deb' || 'https://archive.ubuntu.com/ubuntu/pool/universe/r/rust-sequoia-sqv/sqv_1.3.0-3ubuntu1_amd64.deb' }}
+        TAKE_SQV_SHA256: ${{ runner.arch == 'ARM64' && 'ceeb9c86e301da08fa805279b2822bd146999b227fd1bdda3eae5a4fa32ade23' || '540dab7561a18b799739f4f09da8777ad36bb04160827260765067e520b39d97' }}
+        TAKE_HKP: https://keyserver.ubuntu.com
+        TAKE_VKS: https://keys.openpgp.org
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+      run: |
+        set -euo pipefail
+        exec 3<<TOKEN
+        ${TAKE_TOKEN}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin \
+          RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
+          GITHUB_WORKSPACE="${GITHUB_WORKSPACE:?}" GITHUB_ACTION_PATH="${GITHUB_ACTION_PATH:?}" \
+          TAKE_REPOSITORY_ID="${TAKE_REPOSITORY_ID}" TAKE_TAG="${TAKE_TAG}" \
+          TAKE_WORKFLOW="${TAKE_WORKFLOW}" TAKE_PATH="${TAKE_PATH}" \
+          TAKE_GH_URL="${TAKE_GH_URL}" TAKE_GH_SHA256="${TAKE_GH_SHA256}" \
+          TAKE_SQV_URL="${TAKE_SQV_URL}" TAKE_SQV_SHA256="${TAKE_SQV_SHA256}" \
+          TAKE_HKP="${TAKE_HKP}" TAKE_VKS="${TAKE_VKS}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH}/take.sh"

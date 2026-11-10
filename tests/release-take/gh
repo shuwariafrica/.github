@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# A stand-in of gh 2.103.3 for the release-take tests, answering from a stand-in GitHub under the
+# directory run.sh writes in place of @DATA@ (the take hands gh no environment of the caller's, so the
+# path is in the file):
+#   api <route> --jq <filter>                     <data>/api/<route>.json through jq -r
+#   release download <tag> --repo <r> --dir <d>   copies <data>/releases/<r>/<tag>/, links kept
+#   attestation download <file> --repo <r>        <data>/attestations/<r>/<sha256>.jsonl into
+#                                                 ./sha256:<sha256>.jsonl, or none, as gh does
+#   attestation verify <file> --bundle <b> ...    gh's policy as verify/policy.go and
+#                                                 verification/extensions.go hold it, over bundles
+#                                                 whose lines are {certificate, statement}: what a
+#                                                 Sigstore verification would have shown
+# Every call is logged to <data>/calls, and the names and values of its environment to <data>/env.
+# Each command requires GH_TOKEN to be the token run.sh gives the take.
+set -euo pipefail
+
+readonly data='@DATA@'
+{
+  printf 'gh'
+  printf ' %q' "$@"
+  printf '\n'
+} >>"${data}/calls"
+env | sort >>"${data}/env"
+printf -- '--\n' >>"${data}/env"
+[[ ${GH_TOKEN:-} == take-token ]] || {
+  printf 'gh: not authenticated\n' >&2
+  exit 4
+}
+
+unknown() {
+  printf 'gh: unknown flag %s\n' "$1" >&2
+  exit 2
+}
+
+case ${1:-} in
+  --version)
+    printf 'gh version 2.103.3 (stand-in)\n'
+    ;;
+  api)
+    [[ $# -eq 4 && $3 == --jq ]] || unknown "${3:-}"
+    [[ -f ${data}/api/$2.json ]] || {
+      printf 'gh: Not Found (HTTP 404)\n' >&2
+      exit 1
+    }
+    jq -r "$4" "${data}/api/$2.json"
+    ;;
+  release)
+    [[ $2 == download && $4 == --repo && $6 == --dir && $# -eq 7 ]] || unknown "$*"
+    source="${data}/releases/$5/$3"
+    [[ -d ${source} ]] || {
+      printf 'release not found\n' >&2
+      exit 1
+    }
+    mkdir -p -- "$7"
+    cp -RP -- "${source}/." "$7/"
+    ;;
+  attestation)
+    command=$2 file=$3
+    shift 3
+    digest=$(sha256sum -- "${file}")
+    digest=${digest%% *}
+    if [[ ${command} == download ]]; then
+      [[ $# -eq 2 && $1 == --repo ]] || unknown "$1"
+      if [[ -f ${data}/attestations/$2/${digest}.jsonl ]]; then
+        cp -- "${data}/attestations/$2/${digest}.jsonl" "sha256:${digest}.jsonl"
+      else
+        printf 'No attestations found for %s\n' "${file}"
+      fi
+      exit 0
+    fi
+    [[ ${command} == verify ]] || unknown "${command}"
+    bundle='' repo='' workflow='' ref='' source_digest='' deny=false format='' filter=''
+    while (($# > 0)); do
+      case $1 in
+        --bundle) bundle=$2 && shift 2 ;;
+        --repo) repo=$2 && shift 2 ;;
+        --signer-workflow) workflow=$2 && shift 2 ;;
+        --source-ref) ref=$2 && shift 2 ;;
+        --source-digest) source_digest=$2 && shift 2 ;;
+        --deny-self-hosted-runners) deny=true && shift ;;
+        --format) format=$2 && shift 2 ;;
+        --jq) filter=$2 && shift 2 ;;
+        *) unknown "$1" ;;
+      esac
+    done
+    [[ -n ${repo} && -f ${bundle} && ${format} == json ]] || {
+      printf 'gh: --repo, an existing --bundle and --format json are what the take passes\n' >&2
+      exit 1
+    }
+    # gh compares the owner and repository URIs without case, the source ref exactly and the source
+    # digest without case. A --signer-workflow that ends in a ref is matched whole; without one, the
+    # certificate's SAN must open with the repository's URL, compared without case.
+    # shellcheck disable=SC2016 # a jq program
+    program='[ .[] | select(
+        (.statement.subject | map(.digest.sha256) | index($digest)) != null
+        and .statement.predicateType == "https://slsa.dev/provenance/v1"
+        and .certificate.issuer == "https://token.actions.githubusercontent.com"
+        and (.certificate.sourceRepositoryOwnerURI | ascii_downcase) == ("https://github.com/" + ($repo | split("/")[0]) | ascii_downcase)
+        and (.certificate.sourceRepositoryURI | ascii_downcase) == ("https://github.com/" + $repo | ascii_downcase)
+        and (if $workflow != "" then .certificate.subjectAlternativeName == "https://" + $workflow
+             else (.certificate.subjectAlternativeName | ascii_downcase | startswith("https://github.com/" + ($repo | ascii_downcase) + "/")) end)
+        and ($ref == "" or .certificate.sourceRepositoryRef == $ref)
+        and ($source == "" or (.certificate.sourceRepositoryDigest | ascii_downcase) == ($source | ascii_downcase))
+        and ($deny == "false" or .certificate.runnerEnvironment == "github-hosted"))
+      | {attestation: {bundle: .}, verificationResult: {statement: .statement, signature: {certificate: .certificate}}} ]'
+    verified=$(jq -s -c --arg digest "${digest}" --arg repo "${repo}" --arg workflow "${workflow}" --arg ref "${ref}" \
+      --arg source "${source_digest}" --arg deny "${deny}" "${program}" "${bundle}")
+    [[ ${verified} != '[]' ]] || {
+      printf 'Error: verifying with issuer "sigstore.dev": no attestation matched the policy\n' >&2
+      exit 1
+    }
+    if [[ -n ${filter} ]]; then
+      jq -r "${filter}" <<<"${verified}"
+    else
+      printf '%s\n' "${verified}"
+    fi
+    ;;
+  *)
+    unknown "${1:-}"
+    ;;
+esac
