@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# What keyserver.ubuntu.com (HKP) and keys.openpgp.org (VKS) publish for the primary of <certificate>,
-# each written into <directory>, as the gate reads them (section 5 of the signing record): an
-# answer that holds nothing for it leaves nothing, and one that is no answer refuses, so a keyserver
-# can make a verification refuse and never admit. The bases default to the two the organisation
-# publishes to. Exit 0 when both answered; 75 when one did not.
+# What keyserver.ubuntu.com (HKP) and keys.openpgp.org (VKS) publish for the first primary of
+# <certificate>, each written into <directory>, as the release gate reads them: an answer that holds
+# nothing for it leaves nothing, and one that is no answer refuses. What a file holds is the caller's
+# to judge; merged by --import-options merge-only it adds only what that primary signed. The bases
+# default to the two the organisation publishes to. Exit 0 when both answered; 75 when one did not.
 # Usage: published.sh <certificate> <directory> [<hkp base> <vks base>]
 set -euo pipefail
 

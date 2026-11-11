@@ -11,7 +11,8 @@
 #   --fixtures  where the keys and stand-in tools are made once and reused; a new directory by default.
 # Prints `ok` or `FAIL` per case and the counts. Exit 0 when every case named (all by default)
 # passed; 1 when one failed; 64 for usage; 69 for an absent tool.
-# Needs gpg, gpgconf, sqv, dpkg-deb, python3, yq (mikefarah's), jq, curl, sha256sum and GNU tar.
+# Needs gpg, gpgconf, sqv, dpkg-deb, python3, cc with glibc's headers, inotifywait, yq (mikefarah's),
+# jq, curl, sha256sum and GNU tar.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -42,7 +43,7 @@ while (($# > 0)); do
       ;;
   esac
 done
-for tool in gpg gpgconf sqv dpkg-deb python3 yq jq curl sha256sum tar mktemp; do
+for tool in gpg gpgconf sqv dpkg-deb python3 cc inotifywait yq jq curl sha256sum tar mktemp; do
   command -v "${tool}" >/dev/null 2>&1 || {
     printf '%s not found\n' "${tool}" >&2
     exit 69
@@ -113,7 +114,7 @@ revoked() { # home, file: its public key with its revocation, exported from a ho
 
 # The keys and the stand-in tools, made once per fixtures directory.
 make_fixtures() {
-  local home sqv
+  local home sqv primary
   [[ ! -f ${fixtures}/ready ]] || return 0
   rm -rf -- "${fixtures:?}"/*
   mkdir -p "${fixtures}/keys" "${fixtures}/public" "${fixtures}/tools/gh_2.103.3_linux_amd64/bin" \
@@ -131,6 +132,18 @@ make_fixtures() {
     g "${home}" --armor --export >"${fixtures}/public/${home}.asc"
   done
   g erin --armor --export >"${fixtures}/public/erin.asc"
+  # Erin renewed in a home of her own, as a keyserver could publish it.
+  mkdir -m 700 "${fixtures}/keys/erin-renewed"
+  g erin --export-secret-keys | g erin-renewed --import
+  primary=$(fingerprint erin)
+  g erin-renewed --quick-set-expire "${primary}" 2y
+  g erin-renewed --armor --export >"${fixtures}/public/erin-renewed.asc"
+  # Frank committed with no subkey, then one bound later, as a keyserver could publish it.
+  key frank 'Frank <frank@shuwari.africa>' sign,cert no
+  g frank --armor --export >"${fixtures}/public/frank.asc"
+  primary=$(fingerprint frank)
+  g frank --quick-add-key "${primary}" ed25519 sign 2y
+  g frank --armor --export >"${fixtures}/public/frank-bound.asc"
   # Carol's admitted copy holds her revocation; Dave's is published by the keyservers alone. Each
   # is revoked in a home of its own, so the signing homes still sign.
   revoked carol "${fixtures}/public/carol.asc"
@@ -140,12 +153,64 @@ make_fixtures() {
   sed "s|@DATA@|${fixtures}/current/github|" "${here}/gh" >"${fixtures}/tools/gh_2.103.3_linux_amd64/bin/gh"
   chmod 755 "${fixtures}/tools/gh_2.103.3_linux_amd64/bin/gh"
   tar --create --gzip --file "${fixtures}/tools/gh.tar.gz" --directory "${fixtures}/tools" gh_2.103.3_linux_amd64
+  # The packaged sqv notes whether the take handed it GH_TOKEN, then runs this machine's.
   sqv=$(command -v sqv)
-  cp -- "${sqv}" "${fixtures}/tools/sqv/usr/bin/sqv"
+  cp -- "${sqv}" "${fixtures}/tools/sqv-real"
+  # shellcheck disable=SC2016 # the wrapper's own expansions
+  printf '#!/bin/sh
+[ -z "${GH_TOKEN+set}" ] || printf %s >>%s
+exec %s "$@"
+' \
+    "'sqv was handed GH_TOKEN\\n'" "${fixtures}/current/token-seen" "${fixtures}/tools/sqv-real" \
+    >"${fixtures}/tools/sqv/usr/bin/sqv"
+  chmod 755 "${fixtures}/tools/sqv/usr/bin/sqv"
+  planted_libraries
   printf 'Package: sqv\nVersion: 1.3.0-0test\nArchitecture: amd64\nMaintainer: tests\nDescription: stand-in\n' \
     >"${fixtures}/tools/sqv/DEBIAN/control"
   dpkg-deb --root-owner-group --build "${fixtures}/tools/sqv" "${fixtures}/tools/sqv.deb" >/dev/null
   : >"${fixtures}/ready"
+}
+
+# What a job's environment could name for the step's bash and loader to run, each writing to the
+# running case's planted/marker: a libtinfo.so.6 for LD_LIBRARY_PATH, an audit library for
+# LD_AUDIT, and a character-set converter for GCONV_PATH, which ends the step successfully before
+# its first line.
+planted_libraries() {
+  local marker="${fixtures}/current/planted/marker"
+  mkdir -p "${fixtures}/planted/gconv"
+  printf '#include <fcntl.h>
+#include <unistd.h>
+static void note(const char *m, unsigned long n) { int f = open("%s", O_WRONLY | O_CREAT | O_APPEND, 0644); if (f >= 0) { (void)!write(f, m, n); close(f); } }
+' \
+    "${marker}" >"${fixtures}/planted/note.h"
+  printf '#include "note.h"
+__attribute__((constructor)) static void loaded(void) { note("LD_LIBRARY_PATH library ran\\n", 28); }
+' \
+    >"${fixtures}/planted/tinfo.c"
+  printf '#include "note.h"
+unsigned int la_version(unsigned int v) { note("LD_AUDIT library ran\\n", 21); return v; }
+' \
+    >"${fixtures}/planted/audit.c"
+  printf '#include <stdlib.h>
+#include <gconv.h>
+#include "../note.h"
+int gconv_init(struct __gconv_step *s) { (void)s; note("GCONV_PATH module ran\\n", 22); _exit(0); }
+int gconv(struct __gconv_step *a, struct __gconv_step_data *b, const unsigned char **c, const unsigned char *d, unsigned char **e, size_t *f, int g, int h) { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; return __GCONV_NOCONV; }
+' \
+    >"${fixtures}/planted/gconv/m.c"
+  printf 'module  UTF-8//  INTERNAL  m  1
+module  INTERNAL  UTF-8//  m  1
+' >"${fixtures}/planted/gconv/gconv-modules"
+  cc -shared -fPIC -o "${fixtures}/planted/libtinfo.so.6" "${fixtures}/planted/tinfo.c"
+  cc -shared -fPIC -o "${fixtures}/planted/audit.so" "${fixtures}/planted/audit.c"
+  cc -shared -fPIC -o "${fixtures}/planted/gconv/m.so" "${fixtures}/planted/gconv/m.c"
+}
+
+vks() { # case directory, home, file: what keys.openpgp.org serves for that home's primary
+  local primary
+  primary=$(fingerprint "$2")
+  mkdir -p "$1/keyserver/vks/v1/by-fingerprint"
+  cp -- "$3" "$1/keyserver/vks/v1/by-fingerprint/${primary}"
 }
 
 digest() { # file
@@ -230,7 +295,11 @@ attest_all() { # case directory
 # A coherent release: the action's tree with its roots, the API's answers, the release signed and
 # attested, an empty keyserver, workspace and runner temp. Each case changes one thing of it.
 world() { # case name: prints the case directory
-  local directory="${fixtures}/cases/$1" release name
+  local directory release name sum
+  # A short directory per case: where no /run/user/<uid> exists, gpg puts its agent's sockets in each
+  # home, and a path past the 108 bytes a socket's name holds stops the agent starting.
+  sum=$(cksum <<<"$1")
+  directory="${fixtures}/c/${sum%% *}"
   rm -rf -- "${directory}"
   mkdir -p "${directory}/tree/signing/core-keys" "${directory}/github/api/repositories" "${directory}/keyserver" \
     "${directory}/workspace" "${directory}/temp" "${directory}/planted"
@@ -795,7 +864,8 @@ plant() { # case directory: a caller environment that would change the take wher
     "GNUPGHOME=${d}/planted/gnupg" GH_HOST=attacker.example GH_REPO=attacker/repo GITHUB_TOKEN=other-token
     "BASH_ENV=${d}/planted/startup.sh" "ENV=${d}/planted/startup.sh" SHELLOPTS=xtrace
     "PS4=\$(printf 'PS4 ran\\n' >>${d}/planted/marker)+ " "LD_PRELOAD=${d}/planted/lib/absent.so"
-    "LD_LIBRARY_PATH=${d}/planted/lib" "BASH_FUNC_gpg%%=() { printf 'function gpg ran\\n' >>${d}/planted/marker; command gpg \"\$@\"; }"
+    "LD_LIBRARY_PATH=${fixtures}/planted" "LD_AUDIT=${fixtures}/planted/audit.so" BASHOPTS=extdebug
+    "BASH_FUNC_gpg%%=() { printf 'function gpg ran\\n' >>${d}/planted/marker; command gpg \"\$@\"; }"
     "BASH_FUNC_sha256sum%%=() { printf 'function sha256sum ran\\n' >>${d}/planted/marker; command sha256sum \"\$@\"; }")
 }
 
@@ -806,10 +876,11 @@ case_i7_environment() {
   take "${d}"
   admitted "${d}" members/core
   [[ ! -e ${d}/planted/marker ]] || fail "the caller's environment reached the take: $(<"${d}/planted/marker")"
-  shown=$(grep -E '^\+|preload|ld\.so' "${d}/stderr" || true) # none is the pass
+  shown=$(grep -E '^\+|preload|ld\.so|debugger' "${d}/stderr" || true) # none is the pass
   [[ -z ${shown} ]] || fail "stderr: ${shown}"
-  # gh saw the take's own environment alone.
-  names=$(sed -n '1,/^--$/p' "${d}/github/env" | sed '$d' | cut -d= -f1 | tr '\n' ' ')
+  # gh saw the take's own environment alone: the second record is its first API call's, the first
+  # its --version, which is handed no token.
+  names=$(awk '/^--$/ { record++; next } record == 1' "${d}/github/env" | cut -d= -f1 | tr '\n' ' ')
   expected='GH_CONFIG_DIR GH_HOST GH_NO_UPDATE_NOTIFIER GH_PROMPT_DISABLED GH_TOKEN GITHUB_ACTION_PATH GITHUB_OUTPUT GITHUB_WORKSPACE GNUPGHOME HOME LC_ALL PATH PWD RUNNER_TEMP SHLVL TAKE_GH_SHA256 TAKE_GH_URL TAKE_HKP TAKE_PATH TAKE_REPOSITORY_ID TAKE_SQV_SHA256 TAKE_SQV_URL TAKE_TAG TAKE_VKS TAKE_WORKFLOW TMPDIR XDG_CACHE_HOME XDG_CONFIG_HOME _ '
   [[ ${names} == "${expected}" ]] || fail "gh's environment: ${names}"
   work=$(sed -n 's|^HOME=\(.*\)/home$|\1|p' "${d}/github/env" | head -n 1)
@@ -969,9 +1040,102 @@ case_i10_path_exists() {
   refused "${d}" 64 'exists in the workspace'
 }
 
+# Item 1, inside a command substitution: gh answers, then fails.
+case_i1_api_failure_after_answer() {
+  local d
+  d=$(world i1_api_failure_after_answer)
+  printf '1\n' >"${d}/github/api/repositories/${ID}.status"
+  take "${d}"
+  refused "${d}" 1 'gh: HTTP 502'
+}
+
+# Item 4: a keyserver withdraws an admitted key and never extends one.
+case_i4_later_subkey() {
+  local d
+  d=$(world i4_later_subkey)
+  cp -- "${fixtures}/public/frank.asc" "${d}/tree/signing/core-keys/frank.asc"
+  vks "${d}" frank "${fixtures}/public/frank-bound.asc"
+  sign_tag "${d}" frank subkey "${COMMIT}" "${TAG}"
+  tag_document "${d}"
+  take "${d}"
+  refused "${d}" 65 'adds a key or user id to the admitted certificates'
+}
+
+case_i4_renewed() {
+  local d
+  d=$(world i4_renewed)
+  sign_tag "${d}" erin primary "${COMMIT}" "${TAG}" --faked-system-time 20200101T120000!
+  tag_document "${d}"
+  vks "${d}" erin "${fixtures}/public/erin-renewed.asc"
+  take "${d}"
+  refused "${d}" 65 'changes an admitted certificate other than by a revocation'
+}
+
+# Item 4: one primary a file, since the keyservers are read for a file's first primary alone.
+case_i4_two_in_one_file() {
+  local d
+  d=$(world i4_two_in_one_file)
+  rm -f -- "${d}/tree/signing/core-keys/bob.asc" "${d}/tree/signing/core-keys/dave.asc"
+  cat "${fixtures}/public/bob.asc" "${fixtures}/public/dave-unrevoked.asc" >"${d}/tree/signing/core-keys/pair.asc"
+  vks "${d}" dave "${fixtures}/public/dave-revoked.asc"
+  sign_tag "${d}" dave primary "${COMMIT}" "${TAG}"
+  tag_document "${d}"
+  take "${d}"
+  refused "${d}" 65 'holds 2 primaries, not one'
+}
+
+# Item 5: a subject name that writes a line of its own.
+case_i5_subject_newline() {
+  local d
+  d=$(world i5_subject_newline)
+  # shellcheck disable=SC2016 # a jq program
+  reattest "${d}" '.statement.subject += [{name: ($name + "\nattestation " + $id + " 93454356"), digest: {sha256: $digest}}]'
+  take "${d}"
+  refused "${d}" 65 'gh reports'
+}
+
+# Item 7: a character-set converter the job's GCONV_PATH names, for the step's bash to load as it
+# starts under the job's UTF-8 locale; the release is one the take refuses.
+case_i7_gconv() {
+  local d
+  d=$(world i7_gconv)
+  rm -rf -- "${d}/github/attestations"
+  caller+=("GCONV_PATH=${fixtures}/planted/gconv")
+  take "${d}"
+  refused "${d}" 65 'holds no attestation of'
+  [[ ! -e ${d}/planted/marker ]] || fail "$(<"${d}/planted/marker")"
+}
+
+# Item 7: BASH_COMPAT 5.0 makes a here-document a file in TMPDIR, the job's; the token's must stay a
+# pipe.
+case_i7_bash_compat() {
+  local d watcher created
+  d=$(world i7_bash_compat)
+  mkdir "${d}/heredocs"
+  caller+=(BASH_COMPAT=50 "TMPDIR=${d}/heredocs")
+  inotifywait -m -e create --format '%f' "${d}/heredocs" >"${d}/created" 2>"${d}/watch" &
+  watcher=$!
+  until grep -q 'Watches established' "${d}/watch"; do read -r -t 0.05 <> <(:) || true; done
+  take "${d}"
+  kill "${watcher}"
+  admitted "${d}" members/core
+  created=$(<"${d}/created")
+  [[ -z ${created} ]] || fail "the token's here-document was a file in the job's TMPDIR: ${created}"
+}
+
+# Item 7: GH_TOKEN reaches gh alone; the packaged sqv notes it if handed it.
+case_i7_token_to_gh_alone() {
+  local d
+  d=$(world i7_token_to_gh_alone)
+  take "${d}"
+  admitted "${d}" members/core
+  grep -qxF "GH_TOKEN=${TOKEN}" "${d}/github/env" || fail 'gh was not handed the token'
+  [[ ! -e ${d}/token-seen ]] || fail "$(<"${d}/token-seen")"
+}
+
 make_fixtures
-mkdir -p "${fixtures}/cases" "${fixtures}/home"
-ln -sfn -- "${fixtures}/cases" "${fixtures}/current"
+mkdir -p "${fixtures}/c" "${fixtures}/home"
+ln -sfn -- "${fixtures}/c" "${fixtures}/current"
 # Every request goes to the case the take runs in, through the `current` link.
 python3 -u -m http.server --bind 127.0.0.1 0 --directory "${fixtures}/current/keyserver" >"${fixtures}/keyserver.log" 2>&1 &
 server=$!

@@ -23,10 +23,13 @@
 # Linux with GNU coreutils, tar, curl, dpkg-deb and gpg in /usr/bin, as GitHub's Ubuntu images hold.
 # shellcheck disable=SC2154 # TAKE_*, RUNNER_TEMP and the GITHUB_* variables are action.yml's env
 set -euo pipefail
+# A command substitution's commands stop at their first failure too, as the script's do.
+shopt -s inherit_errexit
 
 readonly OWNER_ID=93454356
 
 work=''
+token=''
 stage=''
 created=()
 
@@ -90,7 +93,6 @@ check_inputs() {
 
 # Every proof's working files, and the homes and caches gh and gpg read, in a directory of its own.
 prepare() {
-  local token=''
   work=$(mktemp -d -p "${RUNNER_TEMP}" release-take.XXXXXXXX)
   mkdir -m 700 "${work}/home" "${work}/tmp" "${work}/config" "${work}/cache" "${work}/gh" "${work}/gnupg"
   IFS= read -r -u 3 token || [[ -n ${token} ]] || refuse 64 'no token on descriptor 3'
@@ -99,12 +101,16 @@ prepare() {
   export HOME="${work}/home" TMPDIR="${work}/tmp" XDG_CONFIG_HOME="${work}/config" XDG_CACHE_HOME="${work}/cache" \
     GH_CONFIG_DIR="${work}/gh" GNUPGHOME="${work}/gnupg" GH_HOST=github.com GH_PROMPT_DISABLED=1 \
     GH_NO_UPDATE_NOTIFIER=1 LC_ALL=C
-  export GH_TOKEN="${token}"
+}
+
+# gh with the token in its environment alone, so no other tool the take runs is handed it.
+github() {
+  GH_TOKEN="${token}" gh "$@"
 }
 
 resolve() { # repository id: prints <owner>/<name>
   local answer id owner name
-  answer=$(gh api "repositories/$1" --jq '"\(.id) \(.owner.id) \(.full_name)"')
+  answer=$(github api "repositories/$1" --jq '"\(.id) \(.owner.id) \(.full_name)"')
   read -r id owner name <<<"${answer}"
   [[ ${id} == "$1" && ${owner} == "${OWNER_ID}" ]] ||
     refuse 65 'repository %s resolves to %q, id %q of owner %q, not one of the organisation (%s)' "$1" "${name}" "${id}" "${owner}" "${OWNER_ID}"
@@ -116,19 +122,19 @@ resolve() { # repository id: prints <owner>/<name>
 # it, which are the object's bytes before its signature and that signature. Prints the commit.
 tag_object() { # repository, tag, directory
   local answer ref kind object sha commit named
-  answer=$(gh api "repos/$1/git/ref/tags/$2" --jq '"\(.ref) \(.object.type) \(.object.sha)"')
+  answer=$(github api "repos/$1/git/ref/tags/$2" --jq '"\(.ref) \(.object.type) \(.object.sha)"')
   read -r ref kind object <<<"${answer}"
   [[ ${ref} == "refs/tags/$2" ]] || refuse 65 'GitHub answers refs/tags/%s with %q' "$2" "${ref}"
   [[ ${kind} == tag ]] || refuse 65 'refs/tags/%s names a %q, not a signed tag object' "$2" "${kind}"
   [[ ${object} =~ ^[0-9a-f]{40}$ ]] || refuse 65 'refs/tags/%s names %q' "$2" "${object}"
-  answer=$(gh api "repos/$1/git/tags/${object}" --jq '"\(.sha) \(.object.type) \(.object.sha) \(.tag)"')
+  answer=$(github api "repos/$1/git/tags/${object}" --jq '"\(.sha) \(.object.type) \(.object.sha) \(.tag)"')
   read -r sha kind commit named <<<"${answer}"
   [[ ${sha} == "${object}" ]] || refuse 65 'GitHub answers tag object %s with %q' "${object}" "${sha}"
   [[ ${named} == "$2" ]] || refuse 65 'the tag object at refs/tags/%s names itself %q' "$2" "${named}"
   [[ ${kind} == commit ]] || refuse 65 'the tag %s is of a %q, not a commit' "$2" "${kind}"
   [[ ${commit} =~ ^[0-9a-f]{40}$ ]] || refuse 65 'the tag %s names %q' "$2" "${commit}"
-  gh api "repos/$1/git/tags/${object}" --jq '.verification.payload // empty | @base64' | base64 -d >"$3/payload"
-  gh api "repos/$1/git/tags/${object}" --jq '.verification.signature // empty | @base64' | base64 -d >"$3/signature"
+  github api "repos/$1/git/tags/${object}" --jq '.verification.payload // empty | @base64' | base64 -d >"$3/payload"
+  github api "repos/$1/git/tags/${object}" --jq '.verification.signature // empty | @base64' | base64 -d >"$3/signature"
   [[ -s $3/payload && -s $3/signature ]] || refuse 65 'the tag %s carries no signature' "$2"
   printf '%s\n' "${commit}"
 }
@@ -157,14 +163,13 @@ assets() { # directory, listing file
   done
 }
 
-# Copies the verified files into a new directory beside <path>, re-hashes the copies, then renames
-# it to <path>, so <path> appears whole or not at all.
+# Claims <path> by making it, copies the verified files into a new directory beside it, re-hashes the
+# copies, then renames that directory onto the claimed one, so <path> holds the release whole or
+# nothing, and no other step can have made it between the claim and the rename.
 place() { # release directory, workspace, path, name...
   local release=$1 at=$2 path=$3 segment parent
   local -a segments
   shift 3
-  [[ ! -e ${at}/${path} && ! -L ${at}/${path} ]] ||
-    refuse 64 '%q exists in the workspace; the take places a release into a new directory' "${path}"
   IFS=/ read -r -a segments <<<"${path}"
   for segment in "${segments[@]::${#segments[@]}-1}"; do
     at="${at}/${segment}"
@@ -176,6 +181,9 @@ place() { # release directory, workspace, path, name...
     [[ -d ${at} ]] || refuse 64 '%q is not a directory' "${at}"
   done
   parent=${at}
+  mkdir -- "${parent}/${segments[-1]}" 2>/dev/null ||
+    refuse 64 '%q exists in the workspace; the take places a release into a new directory' "${path}"
+  created+=("${parent}/${segments[-1]}")
   stage=$(mktemp -d -p "${parent}" .release-take.XXXXXXXX)
   cp -- "${release}/SHA256SUMS" "${release}/SHA256SUMS.asc" "${stage}/"
   for segment in "$@"; do
@@ -223,7 +231,7 @@ main() {
     "${work}/tag/payload" "${work}/tag/signature"
 
   release="${work}/release"
-  gh release download "${TAKE_TAG}" --repo "${repository}" --dir "${release}"
+  github release download "${TAKE_TAG}" --repo "${repository}" --dir "${release}"
   listed=$(assets "${release}" "${work}/assets")
   [[ -f ${release}/SHA256SUMS && -f ${release}/SHA256SUMS.asc ]] || refuse 65 'the release holds no SHA256SUMS and SHA256SUMS.asc'
   mapfile -t held <<<"${listed}"
@@ -252,12 +260,19 @@ main() {
   (cd "${release}" && sha256sum --check --strict --quiet SHA256SUMS) || refuse 65 'the release does not match its SHA256SUMS'
 
   # Per verified attestation, its repository's and owner's ids, then each subject it names.
-  local -r report='.[] | .verificationResult | "attestation \(.signature.certificate.sourceRepositoryIdentifier) \(.signature.certificate.sourceRepositoryOwnerIdentifier)", (.statement.subject[] | "subject \(.digest.sha256) \(.name)")'
+  # A control character in any of them, a line feed above all, could write a line of its own, so
+  # such an attestation is reported as `unreadable`, which no arm below admits.
+  # shellcheck disable=SC2016 # a jq program
+  local -r report='.[] | .verificationResult as $r | $r.signature.certificate as $c
+    | if any(($c.sourceRepositoryIdentifier, $c.sourceRepositoryOwnerIdentifier, ($r.statement.subject[] | .digest.sha256, .name)); tostring | test("[[:cntrl:]]"))
+      then "unreadable"
+      else "attestation \($c.sourceRepositoryIdentifier) \($c.sourceRepositoryOwnerIdentifier)", ($r.statement.subject[] | "subject \(.digest.sha256) \(.name)") end'
   for name in "${!digest_of[@]}"; do
-    (cd "${work}/attestations" && gh attestation download "${release}/${name}" --repo "${repository}")
+    (cd "${work}/attestations" && github attestation download "${release}/${name}" --repo "${repository}")
     [[ -s ${work}/attestations/sha256:${digest_of["${name}"]}.jsonl ]] ||
       refuse 65 '%s holds no attestation of %q' "${repository}" "${name}"
-    verdict=$(gh attestation verify "${release}/${name}" --bundle "${work}/attestations/sha256:${digest_of["${name}"]}.jsonl" \
+    # shellcheck disable=SC2310 # github is gh alone, whose status is the condition
+    verdict=$(github attestation verify "${release}/${name}" --bundle "${work}/attestations/sha256:${digest_of["${name}"]}.jsonl" \
       --repo "${repository}" --signer-workflow "github.com/${repository}/${TAKE_WORKFLOW}@refs/tags/${TAKE_TAG}" \
       --source-ref "refs/tags/${TAKE_TAG}" --source-digest "${commit}" --deny-self-hosted-runners \
       --format json --jq "${report}") ||

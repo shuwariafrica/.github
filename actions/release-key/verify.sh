@@ -6,10 +6,11 @@
 #     against the public key of the home release-key imported, made by that subkey (GOODSIG): a
 #     release job's proof of what it signed, before it publishes;
 #   verify.sh certificate <certificate> <published directory> <notation> <file>...
-#     against C1's certificate alone, merged with each file published.sh left in the directory,
-#     whose import may add only what C1 itself signed (a revocation, a renewal); made by any of C1's
-#     signing subkeys, one that has since lapsed (EXPKEYSIG) included, since sqv holds it to the time
-#     of signing. A revoked key (REVKEYSIG) refuses.
+#     against C1's certificate alone, merged with each file published.sh left in the directory, whose
+#     import adds whatever C1 itself signed and no key beside it: a revocation, and also a renewal, a
+#     later subkey or a user id; made by any of C1's signing subkeys, one that has since lapsed
+#     (EXPKEYSIG) included, since sqv holds it to the time of signing. A revoked key (REVKEYSIG)
+#     refuses.
 # <notation> is <repository id>:<ref>, or - for a signature made without one (sbt-pgp's own).
 # Exit 0 only when gpg and sqv both verify every signature; 65 when a published file does not import
 # or the certificate is not one primary; 70 when a signature does not verify.

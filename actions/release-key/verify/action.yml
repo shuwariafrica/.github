@@ -32,9 +32,10 @@ runs:
   steps:
     # The step runs as release-take's does. The shell is the image's bash in POSIX mode, so no
     # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`, and env -i
-    # then hands verify-step.sh only the variables named. The variables cleared below are this
-    # step's own env, which the runner merges last; each is one bash or the loader reads before this
-    # script's first line.
+    # then hands verify-step.sh only the variables named. The variables below are this step's own
+    # env, which the runner merges last. Each sets aside what bash, glibc or the loader reads before
+    # this script's first line; LC_ALL=C also keeps glibc from loading a character-set converter as
+    # bash starts.
     - name: Verify
       shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
       env:
@@ -50,6 +51,9 @@ runs:
         LD_PRELOAD: ""
         LD_LIBRARY_PATH: ""
         LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
       run: |
         set -euo pipefail
         exec /usr/bin/env -i PATH=/usr/bin:/bin RUNNER_TEMP="${RUNNER_TEMP:?}" \

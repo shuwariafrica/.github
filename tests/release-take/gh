@@ -11,7 +11,7 @@
 #                                                 whose lines are {certificate, statement}: what a
 #                                                 Sigstore verification would have shown
 # Every call is logged to <data>/calls, and the names and values of its environment to <data>/env.
-# Each command requires GH_TOKEN to be the token run.sh gives the take.
+# Each command but --version requires GH_TOKEN to be the token run.sh gives the take.
 set -euo pipefail
 
 readonly data='@DATA@'
@@ -22,7 +22,8 @@ readonly data='@DATA@'
 } >>"${data}/calls"
 env | sort >>"${data}/env"
 printf -- '--\n' >>"${data}/env"
-[[ ${GH_TOKEN:-} == take-token ]] || {
+# Every command but --version needs the token, as gh's do.
+[[ ${GH_TOKEN:-} == take-token || ${1:-} == --version ]] || {
   printf 'gh: not authenticated\n' >&2
   exit 4
 }
@@ -43,6 +44,12 @@ case ${1:-} in
       exit 1
     }
     jq -r "$4" "${data}/api/$2.json"
+    # A route with a .status file answers, then fails, as gh does on a retried request that ends in
+    # an error.
+    if [[ -f ${data}/api/$2.status ]]; then
+      printf 'gh: HTTP 502\n' >&2
+      exit "$(<"${data}/api/$2.status")"
+    fi
     ;;
   release)
     [[ $2 == download && $4 == --repo && $6 == --dir && $# -eq 7 ]] || unknown "$*"

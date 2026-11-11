@@ -38,8 +38,9 @@ runs:
     # The shell is the image's own bash in POSIX mode, so no `bash` on PATH runs this and no
     # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`; env -i then
     # hands take.sh none of the caller's environment, and the token goes on descriptor 3, never into
-    # an argument list. The variables below are this step's own env, which the runner merges last;
-    # each is one bash or the loader reads before this script's first line.
+    # an argument list. The variables below are this step's own env, which the runner merges last.
+    # Each sets aside what bash, glibc or the loader reads before this script's first line; LC_ALL=C
+    # also keeps glibc from loading a character-set converter as bash starts.
     - name: Take the release
       id: take
       shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
@@ -65,6 +66,9 @@ runs:
         LD_PRELOAD: ""
         LD_LIBRARY_PATH: ""
         LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
       run: |
         set -euo pipefail
         exec 3<<TOKEN

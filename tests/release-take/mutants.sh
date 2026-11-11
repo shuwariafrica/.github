@@ -129,6 +129,9 @@ mutant i6_duplicate "${t}" "refuse 65 'SHA256SUMS names %q twice'" "true 65 ''"
 mutant i7_environment "${a}" 'exec /usr/bin/env -i PATH=/usr/bin:/bin' 'exec /usr/bin/env PATH=/usr/bin:/bin'
 mutant i7_environment "${a}" $'        SHELLOPTS: ""\n' ''
 mutant i7_environment "${a}" $'        LD_PRELOAD: ""\n' ''
+mutant i7_environment "${a}" $'        LD_LIBRARY_PATH: ""\n' ''
+mutant i7_environment "${a}" $'        LD_AUDIT: ""\n' ''
+mutant i7_environment "${a}" $'        BASHOPTS: ""\n' ''
 mutant i7_environment "${t}" 'XDG_CACHE_HOME="${work}/cache" ' ''
 mutant i7_environment "${t}" 'GH_HOST=github.com ' ''
 mutant i7_special_builtin "${a}" 'shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}' 'shell: bash'
@@ -148,7 +151,7 @@ mutant i10_path_parent "${t}" '[[ ${segment} != . && ${segment} != .. ]] || retu
 mutant i10_path_absolute "${t}" '[[ -n $1 && $1 != [/~]* &&' '[[ -n $1 &&'
 mutant i10_path_github "${t}" '[[ ${segments[0],,} != .github ]]' 'true'
 mutant i10_path_link "${t}" '[[ ! -L ${at} ]] ||' 'true ||'
-mutant i10_path_exists "${t}" '[[ ! -e ${at}/${path} && ! -L ${at}/${path} ]] ||' 'true ||'
+mutant i10_path_exists "${t}" 'mkdir -- "${parent}/${segments[-1]}" 2>/dev/null ||' 'true ||'
 
 printf '%d red, %d survived\n' "${red}" "${survived}"
 ((survived == 0))
