@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Stands in for curl in the crate-* actions' cases. Serves each request from STUB/routes, lines of
-# `<method> <url><TAB><status><TAB><body file>`, the first that matches; the URL is the one given,
-# without what --get adds. An unrouted request answers 599, and a status of 000 is no answer:
+# `<method> <url><TAB><status><TAB><body file>[<TAB>once]`, the first that matches; the URL is the
+# one given, without what --get adds. A route marked `once` answers one call, its line then kept in
+# STUB/used, so the next call matches a later line. An unrouted request answers 599, and a status of 000 is no answer:
 # nothing is written and the exit is 7, as curl's for a refused connection. Writes the body to
 # --output and the status for --write-out '%{http_code}'; with --fail or --fail-with-body exits 22
 # on a status of 400 or more. Refuses, as curl exiting 2, a request to crates.io or its index
@@ -55,9 +56,14 @@ if [[ ${url} =~ ^https://(index\.)?crates\.io/ && ${agent} != "${WANT}" ]]; then
   printf 'stub curl: %s sent no User-Agent of the release'"'"'s\n' "${url}" >&2
   exit 2
 fi
-route=$(awk -F'\t' -v k="${method} ${url}" '$1 == k {print $2 "\t" $3; exit}' "${STUB}/routes")
-status=${route%%$'\t'*}
-body=${route#*$'\t'}
+[[ -e ${STUB}/used ]] || : >"${STUB}/used"
+used=$(<"${STUB}/used")
+route=$(awk -F'\t' -v k="${method} ${url}" -v used=" ${used//$'\n'/ } " \
+  '$1 == k && !index(used, " " FNR " ") {print FNR "\t" $2 "\t" $3 "\t" $4; exit}' "${STUB}/routes")
+if [[ -n ${route} ]]; then
+  IFS=$'\t' read -r line status body once <<<"${route}"
+  [[ ${once} != once ]] || printf '%s\n' "${line}" >>"${STUB}/used"
+fi
 [[ -n ${route} ]] || {
   status=599
   body=/dev/null

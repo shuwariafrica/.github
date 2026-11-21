@@ -17,12 +17,14 @@ TOOLS=(od cmp)
 
 readonly OWNER_ALONE='{"users":[{"kind":"user","login":"arashi01","id":1}]}'
 
-# A case's world: public-crates, a release in <case>/release signed by <key>, keyservers holding
-# nothing for the project's key, and crates.io holding probe-a as signed and probe-b, bound to
-# trusted publishing alone and owned by the project's owner, at an earlier version.
+# A case's world: public-crates, the project at the run's commit RUN_SHA with its release.yml
+# lifted from the template, a release in <case>/release signed by <key>, keyservers holding nothing
+# for the project's key, and crates.io holding probe-a as signed and probe-b, bound to trusted
+# publishing alone and owned by the project's owner, at an earlier version.
 world() {
   local d=$1 key=${2:-signing} digest
   catalogue_repo "${d}"
+  project_repo "${d}"
   release_dir "${d}/release" "${key}"
   keyservers "${d}" "${SIGNING_KEY}"
   digest=$(awk '$2 == "probe-a-0.1.0.crate" {print $1}' "${d}/release/SHA256SUMS")
@@ -61,7 +63,9 @@ check() {
   local d=$1 path
   path=$(action_path crate-publish)
   run_script "${d}" crate-publish/check-step.sh REPOSITORY=shuwariafrica/probe REPOSITORY_ID="${ID}" \
-    REF=refs/tags/v0.1.0 RUN_ID=4242 DIRECTORY="${d}/release" DIGEST="${DIGEST_OVER:-${DIGEST}}" VERSION=0.1.0 \
+    REF=refs/tags/v0.1.0 SHA="${RUN_SHA}" \
+    WORKFLOW_REF="${WORKFLOW_REF_OVER:-shuwariafrica/probe/.github/workflows/release.yml@refs/tags/v0.1.0}" \
+    RUN_ID=4242 DIRECTORY="${d}/release" DIGEST="${DIGEST_OVER:-${DIGEST}}" VERSION=0.1.0 \
     CRATES="${CRATES_OVER:-[\"probe-a\",\"probe-b\"]}" CRATES_IO=https://crates.io INDEX=https://index.crates.io \
     GITHUB_ACTION_PATH="${path}"
 }
@@ -87,10 +91,33 @@ case_check_runs_as_its_action_step_runs_it() {
   d=$(fresh check_wired)
   world "${d}"
   input=([directory]="${d}/release" [digest]="${DIGEST}" [version]=0.1.0 [crates]='["probe-a","probe-b"]')
-  over=([REPOSITORY]=shuwariafrica/probe [REPOSITORY_ID]="${ID}" [REF]=refs/tags/v0.1.0 [RUN_ID]=4242
+  over=([REPOSITORY]=shuwariafrica/probe [REPOSITORY_ID]="${ID}" [REF]=refs/tags/v0.1.0 [SHA]="${RUN_SHA}"
+    [WORKFLOW_REF]=shuwariafrica/probe/.github/workflows/release.yml@refs/tags/v0.1.0 [RUN_ID]=4242
     [GIT_BASE]="file://${d}/git")
   wired "${d}" crate-publish 0
   expect "${d}" 0 'to publish: probe-b'
+}
+
+# The run is release.yml's, and release.yml at the run's commit is the template lifted, before any
+# token: a step the template does not hold is refused.
+case_a_release_yml_holding_anything_the_template_does_not_is_refused_before_any_token() {
+  local d
+  d=$(fresh run_step)
+  world "${d}"
+  release_yml "${d}/release.yml"
+  sed -i 's|^\(      - uses: shuwariafrica/.github/actions/crate-publish@.*\)$|      - run: printenv\n\1|' "${d}/release.yml"
+  grep -qx '      - run: printenv' "${d}/release.yml" || fail 'the step was not added'
+  project_repo "${d}" "${d}/release.yml"
+  check "${d}"
+  expect "${d}" 1 "release.yml is not public-crates' template at its gate-commit ${GATE}"
+  expect "${d}" 1 'is [      - run: printenv], and the template makes it [      - uses: shuwariafrica/.github/actions/crate-publish@'
+  no_token "${d}"
+  calls_are "${d}" 'crates.io' 0
+  d=$(fresh other_workflow)
+  world "${d}"
+  WORKFLOW_REF_OVER=shuwariafrica/probe/.github/workflows/other.yml@refs/tags/v0.1.0 check "${d}"
+  expect "${d}" 1 "not shuwariafrica/probe's release.yml"
+  no_token "${d}"
 }
 
 case_sums_unlike_packages_output_are_refused() {
@@ -256,6 +283,30 @@ case_an_unknown_crate_fails_the_job_naming_what_the_owners_act_takes() {
   no_token "${d}"
 }
 
+# Two crates crates.io does not hold: the summary says the signed order binds the owner's lines,
+# and gives each crate's lines in that order.
+case_the_summary_binds_the_owners_lines_to_the_signed_order() {
+  local d summary
+  d=$(fresh order_binds)
+  world "${d}"
+  index "${d}" probe-a
+  index "${d}" probe-b
+  sed -i '\|crates.io/api/v1/crates/probe-|d' "${d}/stub/routes"
+  route "${d}" GET https://crates.io/api/v1/crates/probe-a 404 /dev/null
+  route "${d}" GET https://crates.io/api/v1/crates/probe-b 404 /dev/null
+  check "${d}"
+  expect "${d}" 1 'crates.io does not hold probe-a probe-b: the owner publishes each first, in the order this run'"'"'s summary lists them'
+  summary=$(<"${d}/summary")
+  # shellcheck disable=SC2016
+  # The summary's Markdown, quoted as it is written.
+  [[ ${summary} == *'## crates.io does not hold `probe-a`, `probe-b`: the owner publishes them in this order'* ]] ||
+    fail 'the summary does not give the order' "${summary}"
+  [[ ${summary} == *"it binds the owner's lines"*'a new crate that depends on another new crate of this release is published after that one'* ]] ||
+    fail 'the summary does not say the order binds' "${summary}"
+  [[ ${summary} == *'## probe-a 0.1.0 is new'*'## probe-b 0.1.0 is new'* ]] || fail "the crates' lines are not in the signed order"
+  no_token "${d}"
+}
+
 # A run's page offers nothing to copy into a terminal: the owner runs his act's lines.
 case_the_summary_holds_no_line_to_run() {
   local d summary found
@@ -309,30 +360,42 @@ case_crates_ios_api_is_read_a_second_apart_with_the_release_agent() {
 }
 
 # The publication step over the case's release, crates.io's exchange answering 200 and its upload
-# <status>; the OIDC request token on descriptor 3.
+# <status> with the answer <file> (`{}` by default), PUBLISH_OVER (probe-b alone by default) to
+# publish, DIGEST_OVER for package's digest; the index holds probe-b as signed; the OIDC request
+# token on descriptor 3.
 publish_step() {
-  local d=$1 status=$2 digest
+  local d=$1 status=$2 answer=${3:-} digest
   printf '{"value":"oidc-jwt-value"}' >"${d}/oidc"
   route "${d}" GET 'https://oidc.example/token?x=1&audience=crates.io' 200 "${d}/oidc"
   printf '{"token":"cio_tp_secretsecretsecret"}' >"${d}/exchange"
   route "${d}" POST https://crates.io/api/v1/trusted_publishing/tokens 200 "${d}/exchange"
-  printf '{}' >"${d}/put"
-  route "${d}" PUT https://crates.io/api/v1/crates/new "${status}" "${d}/put"
+  if [[ -z ${answer} ]]; then
+    answer=${d}/put
+    printf '{}' >"${answer}"
+  fi
+  route "${d}" PUT https://crates.io/api/v1/crates/new "${status}" "${answer}"
   route "${d}" DELETE https://crates.io/api/v1/trusted_publishing/tokens 204 /dev/null
   digest=$(awk '$2 == "probe-b-0.1.0.crate" {print $1}' "${d}/release/SHA256SUMS")
   index "${d}" probe-b "0.1.0=${digest}"
-  run_script "${d}" crate-publish/publish-step.sh DIRECTORY="${d}/release" DIGEST="${DIGEST}" VERSION=0.1.0 \
-    PUBLISH='["probe-b"]' CRATES_IO=https://crates.io INDEX=https://index.crates.io \
+  run_script "${d}" crate-publish/publish-step.sh DIRECTORY="${d}/release" DIGEST="${DIGEST_OVER:-${DIGEST}}" VERSION=0.1.0 \
+    PUBLISH="${PUBLISH_OVER:-[\"probe-b\"]}" CRATES_IO=https://crates.io INDEX=https://index.crates.io \
     ACTIONS_ID_TOKEN_REQUEST_URL='https://oidc.example/token?x=1' 3<<<request-token
 }
 
+# No token is on the argument list of any process the step starts: curl's (the stand-in's record),
+# and every other's (record_processes), jq's among them.
 case_the_token_is_masked_first_revoked_and_never_an_argument() {
   local d first n masked left
   d=$(fresh token_failure)
   world "${d}"
+  record_processes "${d}"
   publish_step "${d}" 500
-  expect "${d}" 75 'crates.io refused probe-b 0.1.0 (500)'
-  first=$(grep -n cio_tp_secretsecretsecret "${d}/stdout" "${d}/stderr" | head -n1)
+  expect "${d}" 75 'probe-b 0.1.0 (500): {}'
+  grep -q '^jq ' "${d}/stub/processes" || fail 'no jq the step ran was recorded'
+  grep -q '^bash .*publish-step.sh' "${d}/stub/processes" || fail 'the step itself was not recorded'
+  left=$(grep 'oidc-jwt-value\|cio_tp_secret\|request-token' "${d}/stub/processes" || true) # none is the answer
+  [[ -z ${left} ]] || fail 'an argument list carries a token:' "${left}"
+  first=$(grep -n cio_tp_secretsecretsecret "${d}/stdout" "${d}/stderr" | head -n1 || true) # none is answered below
   masked=$(cut -d: -f3- <<<"${first}")
   [[ ${masked} == '::add-mask::cio_tp_secretsecretsecret' ]] || fail "the token is first written as [${first}]"
   n=$(grep -v '^::add-mask::' "${d}/stdout" "${d}/stderr" | grep -c cio_tp_secretsecretsecret || true)
@@ -350,6 +413,99 @@ case_the_token_is_masked_first_revoked_and_never_an_argument() {
   n=$(grep -n $'\tPUT\t' "${d}/stub/calls" | cut -d: -f1)
   cmp -s "${d}/stub/sent.${n}" "${d}/release/probe-b-0.1.0.upload" || fail 'the body sent is not the signed one'
   grep -qxF 'Authorization: cio_tp_secretsecretsecret' "${d}/stub/headers" || fail 'the upload carried no token header'
+}
+
+# The step holds SHA256SUMS to package's digest again before it asks for any token.
+case_the_publication_step_holds_sums_to_packages_digest_before_any_token() {
+  local d
+  d=$(fresh step_digest)
+  world "${d}"
+  DIGEST_OVER=$(printf '%064d' 1) publish_step "${d}" 200
+  expect "${d}" 1 "SHA256SUMS is ${DIGEST}, and package made $(printf '%064d' 1)"
+  calls_are "${d}" . 0
+}
+
+# Each body is held to SHA256SUMS before its PUT: one changed after the check step is not sent.
+case_the_publication_step_sends_no_body_unlike_its_sum() {
+  local d
+  d=$(fresh step_body)
+  world "${d}"
+  printf 'changed\n' >>"${d}/release/probe-b-0.1.0.upload"
+  publish_step "${d}" 200
+  expect "${d}" 1 'probe-b-0.1.0.upload is not the body SHA256SUMS signed'
+  calls_are "${d}" $'\tPUT\t' 0
+  calls_are "${d}" $'\tDELETE\thttps://crates.io/api/v1/trusted_publishing/tokens' 1
+}
+
+# Two crates in one step: each body goes out in the signed order, the second only once the index
+# shows the first at its signed digest, read again ten seconds after it did not.
+case_two_crates_go_out_in_order_each_after_the_index_shows_the_one_before() {
+  local d a b sequence want n found
+  d=$(fresh two_crates)
+  world "${d}"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>%q/stub/sleeps\n' "${d}" >"${d}/bin/sleep"
+  chmod 755 -- "${d}/bin/sleep"
+  found=$(PATH=${d}/bin:/usr/bin:/bin type -P sleep)
+  [[ ${found} == "${d}/bin/sleep" ]] || fail 'sleep does not resolve to the stand-in'
+  a=$(awk '$2 == "probe-a-0.1.0.crate" {print $1}' "${d}/release/SHA256SUMS")
+  b=$(awk '$2 == "probe-b-0.1.0.crate" {print $1}' "${d}/release/SHA256SUMS")
+  sed -i '\|^GET https://index.crates.io/pr/ob/probe-a\t|d' "${d}/stub/routes"
+  jq -nc '{name: "probe-a", vers: "0.0.9", cksum: "0000"}' >"${d}/index-a-before"
+  jq -nc --arg c "${a}" '{name: "probe-a", vers: "0.0.9", cksum: "0000"}, {name: "probe-a", vers: "0.1.0", cksum: $c}' >"${d}/index-a-after"
+  route "${d}" GET https://index.crates.io/pr/ob/probe-a 200 "${d}/index-a-before" once
+  route "${d}" GET https://index.crates.io/pr/ob/probe-a 200 "${d}/index-a-after"
+  PUBLISH_OVER='["probe-a","probe-b"]' publish_step "${d}" 200
+  expect "${d}" 0 'published probe-b 0.1.0'
+  sequence=$(awk -F'\t' '$3 ~ /crates\/new$|index\.crates\.io/ {print $2, $3}' "${d}/stub/calls")
+  want='PUT https://crates.io/api/v1/crates/new
+GET https://index.crates.io/pr/ob/probe-a
+GET https://index.crates.io/pr/ob/probe-a
+PUT https://crates.io/api/v1/crates/new
+GET https://index.crates.io/pr/ob/probe-b'
+  [[ ${sequence} == "${want}" ]] || fail 'the calls are not each PUT, then the index until it shows that crate:' "${sequence}"
+  grep -qx 10 "${d}/stub/sleeps" || fail "the step did not wait ten seconds for the index: $(<"${d}/stub/sleeps")"
+  n=$(grep -n $'\tPUT\t' "${d}/stub/calls" | cut -d: -f1 | paste -sd' ')
+  read -r a b <<<"${n}"
+  cmp -s "${d}/stub/sent.${a}" "${d}/release/probe-a-0.1.0.upload" || fail 'the first body sent is not probe-a'"'"'s'
+  cmp -s "${d}/stub/sent.${b}" "${d}/release/probe-b-0.1.0.upload" || fail 'the second body sent is not probe-b'"'"'s'
+}
+
+# crates.io's refusal of a body (a 4xx other than 401, 403 or 429) fails the step with crates.io's
+# own words, as no re-run is taken; a 429, like a 5xx, leaves it to a re-run.
+case_a_body_crates_io_refuses_fails_and_one_it_defers_is_left_to_a_re_run() {
+  local d
+  d=$(fresh refused)
+  world "${d}"
+  printf '{"errors":[{"detail":"missing or empty metadata fields: description"}]}' >"${d}/refusal"
+  publish_step "${d}" 400 "${d}/refusal"
+  expect "${d}" 1 'crates.io refused probe-b 0.1.0 (400): missing or empty metadata fields: description: a re-run is refused the same way, and only a new version completes the release'
+  calls_are "${d}" $'\tDELETE\thttps://crates.io/api/v1/trusted_publishing/tokens' 1
+  d=$(fresh unprocessable)
+  world "${d}"
+  printf '{"errors":[{"detail":"unprocessable"}]}' >"${d}/refusal"
+  publish_step "${d}" 422 "${d}/refusal"
+  expect "${d}" 1 'crates.io refused probe-b 0.1.0 (422): unprocessable: a re-run is refused the same way, and only a new version completes the release'
+  d=$(fresh busy)
+  world "${d}"
+  printf '{"errors":[{"detail":"You have published too many new crates in a short period of time."}]}' >"${d}/busy"
+  publish_step "${d}" 429 "${d}/busy"
+  expect "${d}" 75 'crates.io did not take probe-b 0.1.0 (429): You have published too many new crates'
+}
+
+# crates.io's refusal of the token (403 for one lapsed or unknown, 401 for a header it cannot read)
+# is the token's, never the body's: the step leaves it to a re-run, which takes a new token.
+case_a_token_crates_io_refuses_is_left_to_a_re_run_with_a_new_one() {
+  local d status detail
+  for status in 403 401; do
+    detail='Invalid authentication token'
+    [[ ${status} == 403 ]] || detail="Missing \`Authorization\` header"
+    d=$(fresh "token_refused_${status}")
+    world "${d}"
+    jq -nc --arg d "${detail}" '{errors: [{detail: $d}]}' >"${d}/refusal"
+    publish_step "${d}" "${status}" "${d}/refusal"
+    expect "${d}" 75 "crates.io refused the token for probe-b 0.1.0 (${status}): ${detail}: a re-run takes a new token and skips the crates already published"
+    calls_are "${d}" $'\tDELETE\thttps://crates.io/api/v1/trusted_publishing/tokens' 1
+  done
 }
 
 case_the_publication_step_runs_as_its_action_step_runs_it() {
@@ -395,10 +551,12 @@ dot_github() {
 }
 
 # The owner's line over the case's world, as the act runs it: the script taken from the clone at
-# <own> (OWN_COMMIT by default) and run by bash from its standard input, the token on descriptor 3;
-# the run 4242's artefacts as gh downloads them.
+# <own> (OWN_COMMIT by default) and run by bash from its standard input, the token on descriptor 3,
+# with OWNER_ENV's further variables; the run 4242's artefacts as gh downloads them. The script
+# reads public-crates at github.com alone, and sets git's configuration aside but for its command
+# line, so a git first on the line's PATH runs the real one with github.com rewritten to the case.
 owner_line() {
-  local d=$1 token=$2 crate=${3:-probe-b} own=${4:-} status=0
+  local d=$1 token=$2 crate=${3:-probe-b} own=${4:-} status=0 found
   mkdir -p -- "${d}/stub/artifacts/4242/package" "${d}/stub/artifacts/4242/signature"
   find "${d}/release" -maxdepth 1 -type f ! -name SHA256SUMS.asc -exec cp -- {} "${d}/stub/artifacts/4242/package/" \;
   cp -- "${d}/release/SHA256SUMS.asc" "${d}/stub/artifacts/4242/signature/"
@@ -407,8 +565,12 @@ owner_line() {
   route "${d}" PUT https://crates.io/api/v1/crates/new 200 "${d}/put"
   [[ -d ${d}/clone ]] || dot_github "${d}"
   [[ -n ${own} ]] || own=${OWN_COMMIT}
+  printf '#!/usr/bin/env bash\nexec /usr/bin/git -c url.%q.insteadOf=https://github.com/ "$@"\n' "file://${d}/git/" >"${d}/bin/git"
+  chmod 755 -- "${d}/bin/git"
+  found=$(PATH=${d}/bin:/usr/bin:/bin type -P git)
+  [[ ${found} == "${d}/bin/git" ]] || fail 'git does not resolve to the stand-in'
   git -C "${d}/clone" show "${own}:actions/crate-publish/owner-publish.sh" |
-    env -i PATH="${d}/bin:/usr/bin:/bin" HOME="${WORK}" GIT_BASE="file://${d}/git" \
+    env -i PATH="${d}/bin:/usr/bin:/bin" HOME="${WORK}" "${OWNER_ENV[@]}" \
       bash -s -- "${d}/clone" "${own}" shuwariafrica/probe v0.1.0 4242 "${crate}" 3<<<"${token}" \
       >"${d}/stdout" 2>"${d}/stderr" || status=$?
   printf '%s\n' "${status}" >"${d}/status"
@@ -417,6 +579,7 @@ owner_line() {
 # A crates.io token's shape (cio and 32 characters, owner-publish.sh), assembled here so the tree holds
 # no literal a secret scanner reads as one.
 readonly OWNER_TOKEN="cio$(printf '%032d' 0)"
+OWNER_ENV=()
 
 # .github's helpers as raw.githubusercontent.com would serve them at OWN_COMMIT, so a script that
 # fetched them would run as well, and only the marker and the recorded calls tell.
@@ -450,6 +613,32 @@ case_the_owners_line_refuses_a_commit_not_on_main_before_reading_any_helper() {
   [[ ! -e ${d}/lib-side && ! -e ${d}/lib-main ]] || fail 'a helper was read'
   [[ ! -s ${d}/stub/gh ]] || fail 'the artefacts were downloaded'
   calls_are "${d}" . 0
+}
+
+# A GIT_BASE in the owner's environment chooses no public-crates of its own.
+case_the_owners_line_reads_public_crates_at_github_whatever_its_environment_names() {
+  local d
+  d=$(fresh owner_git_base)
+  world "${d}"
+  OWNER_ENV=("GIT_BASE=file://${d}/elsewhere")
+  owner_line "${d}" "${OWNER_TOKEN}"
+  expect "${d}" 0 'crates.io took probe-b 0.1.0'
+}
+
+# git's variables in the owner's environment choose nothing for the line: neither git configuration,
+# which git takes as its own command line's (here a rewrite of public-crates' address to a
+# repository elsewhere), nor another repository, nor another transport program.
+case_the_owners_line_reads_public_crates_at_github_whatever_its_git_environment_names() {
+  local d
+  d=$(fresh owner_git_environment)
+  world "${d}"
+  git init --quiet --bare -- "${d}/elsewhere.git"
+  OWNER_ENV=(GIT_CONFIG_COUNT=1 "GIT_CONFIG_KEY_0=url.file://${d}/elsewhere/shuwariafrica/public-crates.insteadOf"
+    GIT_CONFIG_VALUE_0=https://github.com/shuwariafrica/public-crates
+    "GIT_CONFIG_PARAMETERS='url.file://${d}/elsewhere/shuwariafrica/public-crates.insteadof'='https://github.com/shuwariafrica/public-crates'"
+    "GIT_DIR=${d}/elsewhere.git" GIT_SSH_COMMAND=false)
+  owner_line "${d}" "${OWNER_TOKEN}"
+  expect "${d}" 0 'crates.io took probe-b 0.1.0'
 }
 
 case_the_owners_line_fetches_no_dot_github_code() {

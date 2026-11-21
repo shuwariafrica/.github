@@ -28,7 +28,8 @@ pins_hold() {
   kinds=$(yq -r '[explode(.) | .. | select(tag == "!!map" and has("uses")) | .uses | tag] | unique | join(" ")' "${file}" 2>&1) ||
     die "release.yml does not read as YAML: ${kinds//$'\n'/ }"
   [[ -z ${kinds} || ${kinds} == '!!str' ]] || die "release.yml holds a uses that is not a string"
-  listed=$(yq -r 'explode(.) | .. | select(tag == "!!map" and has("uses")) | .uses' "${file}")
+  listed=$(yq -r 'explode(.) | .. | select(tag == "!!map" and has("uses")) | .uses' "${file}" 2>&1) ||
+    die "release.yml does not read as YAML: ${listed//$'\n'/ }"
   while IFS= read -r uses; do
     [[ -n ${uses} ]] || continue
     target=${uses%@*} ref=${uses##*@}

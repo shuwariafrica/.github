@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# Targets: GitHub's hosted Ubuntu runners under release-key's and crate-sign's steps (bash 5.2 or
+# later, gpg 2.4, sqv), and a developer's Linux machine for its cases.
 # Imports C1's subkey-only export into a new GNUPGHOME and proves it is the published key: one
 # secret key whose primary is a stub (no secret material), whose fingerprint is <fingerprint>,
 # with exactly one usable signing subkey. Prints that subkey's fingerprint. A release job signs
 # only after this succeeds, so a wrong or swapped export fails before any artefact is signed.
 # Usage: import-key.sh <subkey export> <fingerprint> <gnupghome>
 set -euo pipefail
+shopt -s inherit_errexit
+unset CDPATH
 
 [[ $# -eq 3 ]] || {
   printf 'usage: import-key.sh <subkey export> <fingerprint> <gnupghome>\n' >&2

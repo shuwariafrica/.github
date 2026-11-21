@@ -4,9 +4,10 @@
 # crate-sign's first step, before any key is read. The run is release.yml's on the tag's push; that
 # file at the run's commit, read through the API as data, runs only actions at commits the release
 # holds them to (pins.sh), judged against this action's own commit and public-crates' gate-commit
-# at main's head; SHA256SUMS in DIRECTORY is crate-package's, by DIGEST, and every file it names
+# at main's head, and is the project's lifted template exactly (lib.sh's release_yml_holds, the rule
+# action.yml states); SHA256SUMS in DIRECTORY is crate-package's, by DIGEST, and every file it names
 # matches; the project of projects.json has a signing key, whose certificate in signing-keys/ is
-# held to it and whose primary no keyserver publishes as revoked.
+# held to it, whose primary no keyserver publishes as revoked, and which keys.openpgp.org serves.
 # Environment: REPOSITORY, REPOSITORY_ID, REF, SHA, WORKFLOW_REF (the run's), DIRECTORY, DIGEST,
 # API, GIT_BASE, RUNNER_TEMP, GITHUB_OUTPUT, GITHUB_ACTION_PATH; the job's token on descriptor 3.
 # Writes fingerprint (the signing key's primary) and revoked (the keys the keyservers publish as
@@ -40,7 +41,7 @@ main() {
   source "${here}/../crate-publish/lib.sh"
   # shellcheck source=actions/crate-sign/pins.sh
   source "${here}/pins.sh"
-  tools git gpg gpgconf curl jq yq awk sha256sum realpath
+  tools git gpg gpgconf curl jq yq awk sed cmp sha256sum realpath
   request=''
   IFS= read -r -u 3 request || [[ -n ${request} ]] || {
     printf '::error::no token on descriptor 3\n' >&2
@@ -73,6 +74,7 @@ main() {
   # pins_hold's status is its answer, and it dies on what it cannot read.
   departures=$(pins_hold "${WORK}/release.yml" "${own}" "${gate}" "${here}/../third-party.tsv") || rc=$?
   ((rc == 0)) || die "release.yml runs what the release does not hold: ${departures//$'\n'/; }"
+  release_yml_holds "${WORK}/release.yml" "${WORK}/public-crates" "${gate}" "${own}" "${project}" "${WORK}/lifted.yml"
 
   [[ -f ${DIRECTORY}/SHA256SUMS ]] || die "${DIRECTORY} holds no SHA256SUMS"
   found=$(sha256sum -- "${DIRECTORY}/SHA256SUMS")
@@ -85,6 +87,7 @@ main() {
   certificate_of "${WORK}/public-crates" "${name}" "${WORK}/signing.asc" "${fingerprint}" "${WORK}/certificate"
   revoked=$(revoked_keys "${WORK}/signing.asc" "${WORK}/revocations")
   ! grep -qxF -- "${fingerprint}" <<<"${revoked}" || die "the keyservers publish the project's key ${fingerprint} as revoked"
+  vks_serves "${WORK}/revocations.published" "${fingerprint}" "${WORK}/served" "${WORK}/signing.asc"
   printf 'fingerprint=%s\nrevoked=%s\n' "${fingerprint}" "${revoked//$'\n'/ }" >>"${GITHUB_OUTPUT}"
   printf 'the run'"'"'s pins and package'"'"'s files hold; signing for %s with %s\n' "${REPOSITORY}" "${fingerprint}"
 }

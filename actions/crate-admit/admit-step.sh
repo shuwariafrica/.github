@@ -2,14 +2,15 @@
 # Targets: GitHub's hosted Ubuntu 26.04 runner, under crate-admit's step (bash 5.3, git, gpg 2.4,
 # python3 3.11 or later, jq, yq), and a developer's Linux machine for its cases.
 # crate-admit's step: the early refusal of a public crate's release, which executes nothing it
-# reads. In order: the run is a tag's push, the tag `v` and a semantic version; public-crates' main,
-# fetched anonymously, holds the project with its id and signing key, the version is not below its
-# first_version; the tag, fetched from the project with its main, is a tag object naming its own
-# name and this run's commit; it is signed once, verified by git over a GnuPG home holding only the
-# project's tag signers' certificates from keys/, with a GOODSIG and a VALIDSIG whose primary is
-# one of them; only then the tagged tree, checked out as data (admit-tree.py); and last
-# release.yml at that commit, read as data, pins every action of the organisation's at the
-# release's commits and runs verify on exactly the project's platforms.
+# reads. In order: the run is a tag's push, the tag `v` and a semantic version with no build
+# metadata; public-crates' main, fetched anonymously, holds the project with its id and signing
+# key, the version is not below its first_version; the tag, fetched from the project with its
+# main, is a tag object naming its own name and this run's commit; it is signed once, verified by
+# git over a GnuPG home holding only the project's tag signers' certificates from keys/, with a
+# GOODSIG and a VALIDSIG whose primary is one of them; only then the tagged tree, checked out as
+# data (admit-tree.py); and last release.yml at that commit, read as data, pins every action of
+# the organisation's at the release's commits, runs verify on exactly the project's platforms, and
+# is the project's lifted template exactly.
 # Environment: EVENT, REPOSITORY, REPOSITORY_ID, REF, SHA (the run's), GIT_BASE, RUNNER_TEMP,
 # GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_ACTION_PATH.
 # Writes version, crates, toolchain, commit, object, signer and primary to GITHUB_OUTPUT.
@@ -47,6 +48,7 @@ inputs() {
   TAG=${REF#refs/tags/}
   [[ ${TAG} =~ ^v${number}\.${number}\.${number}(-${pre}(\.${pre})*)?(\+${build}(\.${build})*)?$ ]] ||
     die "${TAG} is not v and a semantic version"
+  [[ ${TAG} != *+* ]] || die "${TAG} carries build metadata (+${TAG#*+}), which a release's version does not take"
   [[ ${SHA} =~ ^[0-9a-f]{40}$ ]] || die "the run's commit ${SHA} is not 40 hexadecimal digits"
   [[ ${REPOSITORY_ID} =~ ^[1-9][0-9]*$ ]] || die "the repository's id ${REPOSITORY_ID} is not a number"
   VERSION=${TAG#v}
@@ -185,8 +187,9 @@ tree() {
   esac
 }
 
-# release.yml at the commit, as data: every action at a commit the release holds it to,
-# and verify on exactly the project's platforms, each on platforms.json's runner.
+# release.yml at the commit, as data: every action at a commit the release holds it to, verify on
+# exactly the project's platforms, each on platforms.json's runner, and the whole file the project's
+# lifted template exactly (lib.sh's release_yml_holds), as crate-sign and crate-publish hold it.
 workflow() {
   local file=${WORK}/release.yml departures rc=0 platforms want have
   git -C "${TREE}" show "${COMMIT}:.github/workflows/release.yml" >"${file}" 2>/dev/null ||
@@ -201,6 +204,7 @@ workflow() {
   have=$(yq -o=json -I=0 '[.jobs.verify.strategy.matrix.include[] | {"platform": .platform, "runner": .runner}] | sort_by(.platform, .runner)' "${file}" 2>/dev/null) || have=none
   have=$(jq -c 'sort' <<<"${have}" 2>/dev/null) || have=none
   [[ ${have} == "${want}" ]] || die "release.yml's verify runs on ${have}, and the project's platforms are ${want}"
+  release_yml_holds "${file}" "${CAT}" "${GATE}" "${OWN}" "${PROJECT}" "${WORK}/lifted.yml"
 }
 
 cleanup() {
@@ -220,7 +224,7 @@ main() {
   source "${HERE}/../crate-publish/lib.sh"
   # shellcheck source=actions/crate-sign/pins.sh
   source "${HERE}/../crate-sign/pins.sh"
-  tools git gpg gpgconf python3 jq yq sed awk grep realpath
+  tools git gpg gpgconf python3 jq yq sed awk grep cmp realpath
   GPG=$(command -v gpg)
   WORK=$(mktemp -d -p "${RUNNER_TEMP}")
   CAT=${WORK}/public-crates TREE=${WORK}/project

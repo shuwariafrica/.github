@@ -57,8 +57,9 @@ write() { # path, content: the project's file
   printf '%s' "$2" >"${PROJECT}/$1"
 }
 
-# The project's tree: a workspace of two crates at <version>, probe-b depending on probe-a, its
-# toolchain exact, its root cargo configuration holding the two keys it may, and its release.yml.
+# The project's tree: a workspace of two crates at <version>, probe-b depending on probe-a, each
+# with its description and the workspace's licence, its toolchain exact, its root cargo
+# configuration holding the two keys it may, and its release.yml.
 tree_at() {
   find "${PROJECT}" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
   write Cargo.toml "[workspace]
@@ -67,17 +68,22 @@ resolver = \"3\"
 
 [workspace.package]
 version = \"$1\"
+license = \"Apache-2.0\"
 "
   write crates/probe-a/Cargo.toml '[package]
 name = "probe-a"
 version.workspace = true
 edition = "2024"
+description = "The first probe."
+license.workspace = true
 '
   write crates/probe-a/src/lib.rs ''
   write crates/probe-b/Cargo.toml "[package]
 name = \"probe-b\"
 version.workspace = true
 edition = \"2024\"
+description = \"The second probe.\"
+license.workspace = true
 
 [dependencies]
 probe-a = { path = \"../probe-a\", version = \"$1\" }
@@ -194,6 +200,7 @@ case_a_tag_by_a_listed_primary_is_admitted() {
 case_a_subkey_since_revoked_as_superseded_is_refused() {
   local d home subkey fpr
   d=$(fresh superseded)
+  more_keys
   home=$(own_key retire superseded)
   world "${d}" "${home}"
   tagged 1.2.3 "${home}"
@@ -359,6 +366,16 @@ case_a_run_other_than_a_v_tags_push_is_refused() {
   done
 }
 
+# A version with build metadata is refused, though it is a semantic version and its tree agrees.
+case_a_version_with_build_metadata_is_refused() {
+  local d
+  d=$(fresh build_metadata)
+  world "${d}"
+  tagged 1.2.3+build.1 tag
+  admit "${d}" v1.2.3+build.1
+  expect "${d}" 1 "v1.2.3+build.1 carries build metadata (+build.1), which a release's version does not take"
+}
+
 case_a_version_below_the_projects_first_version_is_refused() {
   local d
   d=$(fresh first)
@@ -414,6 +431,20 @@ case_release_ymls_actions_off_the_releases_commits_are_refused() {
   expect "${d}" 1 'someone/evil@1234567890123456789012345678901234567890 is not on'
 }
 
+# release.yml is the project's lifted template exactly, before anything is built: a step the
+# template does not hold is refused here, as crate-sign and crate-publish refuse it again.
+case_a_release_yml_holding_anything_the_template_does_not_is_refused_before_any_build() {
+  local d
+  d=$(fresh lifted)
+  world "${d}"
+  tree_at 1.2.3
+  sed -i 's|^\(      - uses: actions/checkout@.*\)$|\1\n      - run: printenv|' "${PROJECT}/.github/workflows/release.yml"
+  grep -qx '      - run: printenv' "${PROJECT}/.github/workflows/release.yml" || fail 'the step was not added'
+  again "${d}"
+  expect "${d}" 1 "release.yml is not public-crates' template at its gate-commit ${GATE}"
+  expect "${d}" 1 'line 20 is [      - run: printenv], and the template makes it [      - uses: shuwariafrica/.github/actions/crate-package@'
+}
+
 case_verify_on_other_platforms_than_the_projects_is_refused() {
   local d
   d=$(fresh platforms)
@@ -423,6 +454,10 @@ case_verify_on_other_platforms_than_the_projects_is_refused() {
   again "${d}"
   expect "${d}" 1 "release.yml's verify runs on"
   catalogue_edit "${d}" '.projects.probe.platforms = ["linux-x64", "windows-x64"]'
+  release_yml "${PROJECT}/.github/workflows/release.yml"
+  sed -i 's|^            runner: ubuntu-26.04$|&\n          - platform: windows-x64\n            runner: windows-2025-vs2026|' \
+    "${PROJECT}/.github/workflows/release.yml"
+  grep -qx '          - platform: windows-x64' "${PROJECT}/.github/workflows/release.yml" || fail 'the platform was not written'
   again "${d}"
   admitted "${d}"
   release_yml "${PROJECT}/.github/workflows/release.yml" '.jobs.verify.strategy.matrix.include += [{"platform": "windows-x64", "runner": "ubuntu-26.04"}]'
@@ -459,6 +494,35 @@ publish = false
 '
   again "${d}"
   admitted "${d}"
+}
+
+# A crate's manifest gives what crates.io refuses a crate without: a description that is not empty,
+# and a license or a license-file, its own or the workspace's.
+case_a_crate_without_a_description_or_a_licence_is_refused() {
+  local d manifest
+  d=$(fresh metadata)
+  world "${d}"
+  manifest=crates/probe-b/Cargo.toml
+  tree_at 1.2.3
+  sed -i '/^description = /d' "${PROJECT}/${manifest}"
+  again "${d}"
+  expect "${d}" 1 "probe-b's manifest gives no description, and crates.io refuses a crate without one"
+  tree_at 1.2.3
+  sed -i 's/^description = .*/description = ""/' "${PROJECT}/${manifest}"
+  again "${d}"
+  expect "${d}" 1 "probe-b's manifest gives no description"
+  tree_at 1.2.3
+  sed -i '/^license.workspace = true$/d' "${PROJECT}/${manifest}"
+  again "${d}"
+  expect "${d}" 1 "probe-b's manifest gives neither license nor license-file, and crates.io refuses a crate without one"
+  sed -i '/^description = /a license-file = "LICENSE"' "${PROJECT}/${manifest}"
+  grep -qx 'license-file = "LICENSE"' "${PROJECT}/${manifest}" || fail 'license-file was not written'
+  again "${d}"
+  admitted "${d}"
+  tree_at 1.2.3
+  sed -i '/^license = /d' "${PROJECT}/Cargo.toml"
+  again "${d}"
+  expect "${d}" 1 "probe-a's manifest gives neither license nor license-file"
 }
 
 case_any_cargo_configuration_but_the_roots_two_keys_is_refused() {
@@ -527,6 +591,8 @@ case_the_dependency_order_puts_each_crate_after_those_it_depends_on() {
 name = "probe-a"
 version.workspace = true
 edition = "2024"
+description = "The first probe."
+license.workspace = true
 
 [dependencies]
 probe-b = { path = "../probe-b", version = "1.2.3" }
@@ -535,6 +601,8 @@ probe-b = { path = "../probe-b", version = "1.2.3" }
 name = "probe-b"
 version.workspace = true
 edition = "2024"
+description = "The second probe."
+license.workspace = true
 '
   again "${d}"
   admitted "${d}"

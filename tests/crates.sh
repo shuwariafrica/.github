@@ -4,6 +4,8 @@
 #   - keys made in throwaway GnuPG homes under faked times: a tag signer, the project's signing key
 #     (a certifying primary and a signing subkey, as generate-project-key makes it) and a stranger;
 #   - public-crates and the project as git repositories, which git reaches at GIT_BASE (file://);
+#     public-crates' main stands on the commit GATE, its gate-commit, which holds the template's
+#     release.yml (template_yml), so a release.yml is lifted from it as a project lifts the real one;
 #   - the stand-ins of tests/crate-publish/stub (curl, gh, sudo) first on PATH, through wrappers in
 #     the case's bin naming its stub directory, where each records its calls;
 #   - a release's files as crate-package writes them, signed by the project's subkey;
@@ -19,8 +21,11 @@ shopt -s inherit_errexit
 
 declare -A input=() over=()
 caller=() runner=()
-readonly OWN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-readonly GATE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+# The commit of .github the actions run at, which the template's placeholder is not, so a lifting
+# that leaves the placeholder is told apart.
+readonly OWN=dddddddddddddddddddddddddddddddddddddddd
+readonly PLACEHOLDER_OWN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+readonly PLACEHOLDER_GATE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 readonly COMMIT_OFF=cccccccccccccccccccccccccccccccccccccccc
 readonly ID=1295027104
 readonly AGENT_WANT='shuwariafrica-crate-release (https://github.com/shuwariafrica/.github)'
@@ -105,6 +110,7 @@ exec %s/%s "$@"
     chmod 755 -- "${d}/bin/${tool}"
   done
   : >"${d}/stub/routes"
+  : >"${d}/stub/used"
   : >"${d}/stub/calls"
   : >"${d}/stub/argv"
   : >"${d}/output"
@@ -114,8 +120,29 @@ exec %s/%s "$@"
   printf '%s\n' "${d}"
 }
 
-route() { # case directory, method, url, status, body file
-  printf '%s %s\t%s\t%s\n' "$2" "$3" "$4" "$5" >>"$1/stub/routes"
+route() { # case directory, method, url, status, body file, `once` for a route that answers one call
+  printf '%s %s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" "${6:-}" >>"$1/stub/routes"
+}
+
+# Every process the case's steps start through PATH, recorded with its arguments, a line each, in
+# <case>/stub/processes: each name of /usr/bin that the case's bin does not hold already stands
+# there as a recorder, which writes its name and arguments, then runs /usr/bin's.
+record_processes() {
+  local d=$1 name found
+  cat >"${d}/recorder" <<'RECORDER'
+#!/usr/bin/bash
+printf '%s\n' "${0##*/} $*" >>"@LOG@"
+exec "/usr/bin/${0##*/}" "$@"
+RECORDER
+  sed -i "s|@LOG@|${d}/stub/processes|" "${d}/recorder"
+  chmod 755 -- "${d}/recorder"
+  : >"${d}/stub/processes"
+  for name in /usr/bin/*; do
+    name=${name##*/}
+    [[ -e ${d}/bin/${name} ]] || ln -s -- "${d}/recorder" "${d}/bin/${name}"
+  done
+  found=$(PATH=${d}/bin:/usr/bin:/bin type -P jq)
+  [[ ${found} == "${d}/bin/jq" ]] || fail 'jq does not resolve to the recorder'
 }
 
 # The project's entry as projects.json holds it, edited by the jq filter <filter>.
@@ -126,12 +153,14 @@ project_json() {
     platforms: ["linux-x64"], license: "Apache-2.0", git_sources: []} | '"${1:-.}"
 }
 
-# public-crates' main in the case <dir>: projects.json holding the project probe (its entry edited by
-# <filter>), platforms.json, keys/ with the tag signer, signing-keys/probe.asc (the certificate of
-# the key home <signing>, signing by default) and gate-commit.
+# public-crates' main in the case <dir>, a commit on GATE: projects.json holding the project probe
+# (its entry edited by <filter>), platforms.json, keys/ with the tag signer, signing-keys/probe.asc
+# (the certificate of the key home <signing>, signing by default) and gate-commit naming GATE.
 catalogue_repo() {
   local d=$1 filter=${2:-.} signing=${3:-signing} repo=$1/git/shuwariafrica/public-crates entry fpr
   rm -rf -- "${repo}"
+  git clone --quiet -- "${WORK}/gate" "${repo}"
+  git -C "${repo}" remote remove origin
   mkdir -p -- "${repo}/keys" "${repo}/signing-keys"
   entry=$(project_json "${filter}")
   jq '{projects: {probe: .}}' <<<"${entry}" >"${repo}/projects.json"
@@ -140,7 +169,6 @@ catalogue_repo() {
   fpr=$(primary_of "${signing}")
   g "${signing}" --armor --export "${fpr}" >"${repo}/signing-keys/probe.asc"
   printf '%s\n' "${GATE}" >"${repo}/gate-commit"
-  git init --quiet -b main -- "${repo}"
   git -C "${repo}" add -A
   git -C "${repo}" -c user.name=t -c user.email=t@example.invalid commit --quiet --no-gpg-sign -m catalogue
 }
@@ -206,12 +234,15 @@ keyservers() {
   fi
 }
 
-# A project's release.yml into <file>, its actions at the commits the release holds them to and its
-# verify on linux-x64, then edited by the yq expression <edit>.
-release_yml() {
-  local file=$1 edit=${2:-.}
-  cat >"${file}" <<YAML
+# public-crates' template release.yml as the cases' gate-commit holds it, in the real template's
+# form: each placeholder in a comment and in every pin of the organisation's actions, and verify's
+# list of one entry.
+template_yml() {
+  cat <<YAML
 name: release
+
+# Lifted from public-crates' template/: ${PLACEHOLDER_OWN} stands for the commit of
+# shuwariafrica/.github, and ${PLACEHOLDER_GATE} for public-crates' gate-commit.
 on:
   push:
     tags: ["v*"]
@@ -221,13 +252,13 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - id: admit
-        uses: shuwariafrica/.github/actions/crate-admit@${OWN}
+        uses: shuwariafrica/.github/actions/crate-admit@${PLACEHOLDER_OWN}
   package:
     needs: admit
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: shuwariafrica/.github/actions/crate-package@${OWN}
+      - uses: shuwariafrica/.github/actions/crate-package@${PLACEHOLDER_OWN}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
   verify:
     needs: [admit, package]
@@ -238,16 +269,49 @@ jobs:
             runner: ubuntu-26.04
     runs-on: \${{ matrix.runner }}
     steps:
-      - uses: shuwariafrica/public-crates/.github/actions/checks@${GATE}
+      - uses: shuwariafrica/public-crates/.github/actions/checks@${PLACEHOLDER_GATE}
   sign:
     needs: [admit, package, verify]
     runs-on: ubuntu-26.04
     environment: release
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-      - uses: shuwariafrica/.github/actions/crate-sign@${OWN}
+      - uses: shuwariafrica/.github/actions/crate-sign@${PLACEHOLDER_OWN}
+  publish:
+    needs: [admit, package, sign]
+    runs-on: ubuntu-26.04
+    environment: release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - uses: shuwariafrica/.github/actions/crate-publish@${PLACEHOLDER_OWN}
 YAML
-  yq -i "${edit}" "${file}"
+}
+
+# A project's release.yml into <file>: the template lifted for a project on linux-x64 alone, its
+# placeholders OWN and GATE, then, where <edit> is given, edited by that yq expression (which
+# rewrites the file in yq's form).
+release_yml() {
+  local file=$1 edit=${2:-.} text
+  text=$(template_yml)
+  sed -e "s/${PLACEHOLDER_OWN}/${OWN}/g" -e "s/${PLACEHOLDER_GATE}/${GATE}/g" <<<"${text}" >"${file}"
+  [[ ${edit} == . ]] || yq -i "${edit}" "${file}"
+}
+
+# The project's repository in the case <dir>, its one commit holding <file> (release_yml's by
+# default) as .github/workflows/release.yml; that commit's id in RUN_SHA.
+project_repo() {
+  local d=$1 file=${2:-} repo=$1/git/shuwariafrica/probe
+  rm -rf -- "${repo}"
+  mkdir -p -- "${repo}/.github/workflows"
+  if [[ -n ${file} ]]; then
+    cp -- "${file}" "${repo}/.github/workflows/release.yml"
+  else
+    release_yml "${repo}/.github/workflows/release.yml"
+  fi
+  git init --quiet -b main -- "${repo}"
+  git -C "${repo}" add -A
+  git -C "${repo}" -c user.name=t -c user.email=t@example.invalid commit --quiet --no-gpg-sign -m project
+  RUN_SHA=$(git -C "${repo}" rev-parse HEAD)
 }
 
 # The directory an action <name> runs from at OWN, as the runner lays it out.
@@ -358,6 +422,13 @@ crates_main() {
   readonly WORK
   trap '((BASHPID == '"${BASHPID}"')) && crates_cleanup' EXIT
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  mkdir -p -- "${WORK}/gate/template/.github/workflows"
+  template_yml >"${WORK}/gate/template/.github/workflows/release.yml"
+  git init --quiet -b main -- "${WORK}/gate"
+  git -C "${WORK}/gate" add -A
+  git -C "${WORK}/gate" -c user.name=t -c user.email=t@example.invalid commit --quiet --no-gpg-sign -m gate
+  GATE=$(git -C "${WORK}/gate" rev-parse HEAD)
+  readonly GATE
   STUBS=${WORK}/stubs
   mkdir -p -- "${STUBS}" "${WORK}/_actions/shuwariafrica/.github"
   cp -- "${HERE}/../crate-publish/stub/curl" "${HERE}/../crate-publish/stub/gh" "${HERE}/../crate-publish/stub/sudo" "${STUBS}/"

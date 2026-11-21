@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Targets: GitHub's hosted Ubuntu runners under release-key's and crate-sign's steps (bash 5.2 or
+# later, gpg 2.4, sqv), and a developer's Linux machine for its cases.
 # The release-key action's import step, which action.yml starts under `env -i`. It reads the
 # subkey-only export in the secret SECRET (C1's, c1-subkey, where SECRET is unset) from Key Vault
 # as the identity `release` federates to, registers every line of it with the runner's mask before
@@ -11,8 +13,15 @@
 # through.
 # shellcheck disable=SC2154 # the variables above are action.yml's env
 set -euo pipefail
+shopt -s inherit_errexit
+unset CDPATH
+[[ "${BASH_SOURCE@a}" == *a* ]] || {
+  printf '%s: BASH_SOURCE is set by the environment\n' "$0" >&2
+  exit 2
+}
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+self=$(realpath -- "${BASH_SOURCE[0]}")
+here=$(dirname -- "${self}")
 readonly here
 : "${TENANT_ID:?}" "${CLIENT_ID:?}" "${VAULT_URL:?}" "${FINGERPRINT:?}" "${RUNNER_TEMP:?}" "${GITHUB_OUTPUT:?}"
 [[ ${VAULT_URL} =~ ^https://[a-z0-9-]+\.vault\.azure\.net/?$ ]] || {

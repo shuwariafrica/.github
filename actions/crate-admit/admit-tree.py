@@ -8,9 +8,9 @@ and a symbolic link is a file, never followed.
 Run with `python3 -I` (3.11 or later, for tomllib). Exit 0 with one JSON line, `{"order": [...],
 "toolchain": "..."}`: the publishable crates, each after every one it depends on (ties by name),
 and the one exact release rust-toolchain.toml names. Exit 1 with the finding that refuses the tree
-on stdout, the first in this order: manifests, versions and crates, cargo configuration,
-Cargo.lock's sources, rust-toolchain, rust-toolchain.toml, the dependency order. Exit 3 with what
-could not be read, and 64 on a bad invocation.
+on stdout, the first in this order: manifests, versions and crates, each crate's description and
+licence, cargo configuration, Cargo.lock's sources, rust-toolchain, rust-toolchain.toml, the
+dependency order. Exit 3 with what could not be read, and 64 on a bad invocation.
 """
 
 import glob
@@ -257,8 +257,24 @@ def publishable(root: str, files: set[PurePosixPath]) -> dict:
         if version is None or not publish:
             continue
         depends = {p for p, kept in path_dependencies(directory, member, workspace) if kept and p != directory}
-        crates[directory] = {"name": name, "version": version, "depends": depends}
+        metadata = {f: field(package, workspace, f) for f in ("description", "license", "license-file")}
+        crates[directory] = {"name": name, "version": version, "depends": depends, "metadata": metadata}
     return crates
+
+
+def stated(value) -> bool:
+    """A manifest field crates.io counts as given: a string that is not empty."""
+    return isinstance(value, str) and value != ""
+
+
+def metadata(crates: dict) -> None:
+    """Each crate's manifest gives what crates.io refuses a crate without (its publish endpoint's
+    required fields): a description, and a license or a license-file."""
+    for c in sorted(crates.values(), key=lambda c: c["name"]):
+        if not stated(c["metadata"]["description"]):
+            raise Finding(f"{c['name']}'s manifest gives no description, and crates.io refuses a crate without one")
+        if not (stated(c["metadata"]["license"]) or stated(c["metadata"]["license-file"])):
+            raise Finding(f"{c['name']}'s manifest gives neither license nor license-file, and crates.io refuses a crate without one")
 
 
 def leaves(values: dict, prefix: str, out: list[str]) -> None:
@@ -348,6 +364,7 @@ def check(root: str, version: str, listed: list[str]) -> dict:
             f"the publishable crates are [{', '.join(c['name'] for c in crates.values())}],"
             f" and the project's are [{', '.join(wanted)}]"
         )
+    metadata(crates)
     ordered = sorted(files, key=key)
     for path in ordered:
         if path.parent.name == ".cargo" and path.name in ("config", "config.toml"):

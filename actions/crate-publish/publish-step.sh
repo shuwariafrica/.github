@@ -10,8 +10,11 @@
 # Environment: DIRECTORY, DIGEST, VERSION, PUBLISH (a JSON array of crate names), CRATES_IO, INDEX,
 # RUNNER_TEMP and ACTIONS_ID_TOKEN_REQUEST_URL; the OIDC request token on descriptor 3. The index
 # is read every ten seconds for ten minutes.
-# Exit 0 when every crate is published; 1 refused; 64 for an invocation it refuses; 69 for an absent
-# tool; 75 when crates.io or GitHub did not take a request.
+# Exit 0 when every crate is published; 1 refused, crates.io's refusal of a body (a 4xx other than
+# 401, 403 or 429) included, which no re-run undoes; 64 for an invocation it refuses; 69 for an
+# absent tool; 75 when crates.io or GitHub did not take a request and a re-run may, crates.io's
+# refusal of the token (401 or 403) included: the token lives 30 minutes, the wait for the index
+# after each crate can outlast it, and a re-run takes a new one and skips what is published.
 # shellcheck disable=SC2153,SC2154 # the variables above are action.yml's env, checked in main
 set -euo pipefail
 shopt -s inherit_errexit
@@ -30,6 +33,15 @@ crates_send() {
   code=$(curl --silent --show-error --max-time 300 --user-agent "${AGENT}" --output "${out}" --write-out '%{http_code}' \
     --header @"${WORK}/token.header" --request "${method}" "${body[@]}" "${CRATES_IO}${path}") || code=000
   printf '%s' "${code}"
+}
+
+# What crates.io's answer <file> says: the detail of each of its errors, else its first 1000 bytes.
+said() {
+  local detail
+  detail=$(jq -r '[.errors[]?.detail | strings] | join("; ")' "$1" 2>/dev/null) ||
+    detail='' # an answer that is not crates.io's JSON is shown as it is, below
+  [[ -n ${detail} ]] || detail=$(head -c 1000 -- "$1")
+  printf '%s' "${detail//$'\n'/ }"
 }
 
 TOKEN=no
@@ -64,7 +76,7 @@ exchange() {
   printf '::add-mask::%s\n' "${oidc}"
   (
     umask 077
-    jq -nc --arg jwt "${oidc}" '{jwt: $jwt}' >"${WORK}/exchange.json"
+    jq -Rc '{jwt: .}' <<<"${oidc}" >"${WORK}/exchange.json"
   )
   api_pace "${WORK}/clock"
   code=$(curl --silent --show-error --max-time 60 --user-agent "${AGENT}" --output "${WORK}/exchanged" --write-out '%{http_code}' \
@@ -87,14 +99,14 @@ exchange() {
 }
 
 main() {
-  local self here request crates crate body digest line found held wait code
+  local self here request crates crate body digest line found held wait code message
   local -a names
   : "${DIRECTORY:?}" "${DIGEST:?}" "${VERSION:?}" "${PUBLISH:?}" "${CRATES_IO:?}" "${INDEX:?}" "${RUNNER_TEMP:?}"
   self=$(realpath -- "${BASH_SOURCE[0]}")
   here=$(dirname -- "${self}")
   # shellcheck source=actions/crate-publish/lib.sh
   source "${here}/lib.sh"
-  tools curl jq awk sha256sum realpath mktemp date sleep
+  tools curl jq awk head sha256sum realpath mktemp date sleep
   request=''
   IFS= read -r -u 3 request || [[ -n ${request} ]] || {
     printf '::error::no OIDC request token on descriptor 3\n' >&2
@@ -122,7 +134,14 @@ main() {
     api_pace "${WORK}/clock"
     code=$(crates_send PUT /api/v1/crates/new "${DIRECTORY}/${body}" "${WORK}/answer")
     date +%s%N >"${WORK}/clock"
-    [[ ${code} == 200 ]] || unreadable "crates.io refused ${crate} ${VERSION} (${code}): $(<"${WORK}/answer")"
+    [[ ${code} == 200 ]] || message=$(said "${WORK}/answer")
+    case ${code} in
+      200) ;;
+      429 | 000 | 5??) unreadable "crates.io did not take ${crate} ${VERSION} (${code}): ${message}" ;;
+      401 | 403) unreadable "crates.io refused the token for ${crate} ${VERSION} (${code}): ${message}: a re-run takes a new token and skips the crates already published" ;;
+      4??) die "crates.io refused ${crate} ${VERSION} (${code}): ${message}: a re-run is refused the same way, and only a new version completes the release" ;;
+      *) unreadable "crates.io answered ${code} for ${crate} ${VERSION}: ${message}" ;;
+    esac
     digest=$(awk -v f="${crate}-${VERSION}.crate" '{name = $2; sub(/^\*/, "", name); if (name == f) print $1}' "${DIRECTORY}/SHA256SUMS")
     wait=0
     held=$(index_digest "${crate}" "${VERSION}" "${WORK}")

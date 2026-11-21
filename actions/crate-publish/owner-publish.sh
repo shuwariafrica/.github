@@ -21,7 +21,13 @@
 set -euo pipefail
 shopt -s inherit_errexit
 unset CDPATH
-# git's configuration for every git run here is the command line's alone.
+# Nothing of git's from the owner's environment reaches a git run here: git reads every GIT_
+# variable (its configuration, repository, programs and transport among them), through which the
+# environment would choose where public-crates, the signing key and its certificate are read from.
+# git's configuration is then the command line's alone.
+for name in "${!GIT_@}"; do
+  unset "${name}"
+done
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 
 WORK=''
@@ -69,7 +75,8 @@ main() {
   chmod 755 -- "${dot}/release-key/published.sh"
   # shellcheck source=actions/crate-publish/lib.sh
   source "${dot}/crate-publish/lib.sh"
-  : "${GIT_BASE:=https://github.com}"
+  # public-crates is GitHub's, whatever the owner's environment names.
+  GIT_BASE=https://github.com
   gh run download "${run}" --repo "${repository}" --name package --dir "${WORK}/release" >/dev/null
   gh run download "${run}" --repo "${repository}" --name signature --dir "${WORK}/release" >/dev/null
   id=$(gh api "repos/${repository}" --jq .id)

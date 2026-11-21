@@ -129,6 +129,18 @@ case_a_signature_not_by_signing_key_is_refused() {
   expect "${d}" 1 "not one good signature under the project's signing certificate"
 }
 
+# make verifies SHA256SUMS.asc again, since the attest step runs between the two steps: a signature
+# not by the project's key is refused before anything is written.
+case_make_refuses_a_signature_not_by_signing_key() {
+  local d
+  d=$(fresh make_other_signer)
+  world "${d}" stranger
+  making "${d}"
+  step_of "${d}" make
+  expect "${d}" 1 "not one good signature under the project's signing certificate"
+  calls_are "${d}" $'\t(POST|PATCH|DELETE)\t' 0
+}
+
 case_a_commit_or_version_not_the_runs_is_refused() {
   local d
   d=$(fresh other_commit)
@@ -233,6 +245,51 @@ case_a_draft_this_step_made_is_deleted_when_it_stops_short() {
   expect "${d}" 75 'GitHub answered 502 for the asset probe-b-0.1.0.crate'
   calls_are "${d}" $'\tDELETE\thttps://api.github.com/repos/shuwariafrica/probe/releases/77$' 1
   calls_are "${d}" $'\tPATCH\t' 0
+}
+
+# GitHub's answers when its answer to the publication was <status>: the release 77 read back by id
+# as <read status> with <draft> (`true`, `false`, or none for no body).
+publish_unanswered() {
+  local d=$1 status=$2 read=$3 draft=${4:-}
+  sed -i '/^PATCH /d' "${d}/stub/routes"
+  route "${d}" PATCH "${API}/releases/77" "${status}" /dev/null
+  if [[ -n ${draft} ]]; then
+    printf '{"id": 77, "tag_name": "v0.1.0", "draft": %s}' "${draft}" >"${d}/read-back.json"
+  else
+    printf '{}' >"${d}/read-back.json"
+  fi
+  route "${d}" GET "${API}/releases/77" "${read}" "${d}/read-back.json"
+}
+
+# A publication GitHub did not answer with 200 is read back by id, and nothing is deleted in that
+# run, even a release that reads back as a draft: GitHub can still commit the publication, and a
+# published release is immutable, its tag never reusable once deleted.
+case_no_release_is_deleted_after_an_unanswered_publication() {
+  local d
+  d=$(fresh unanswered_draft)
+  world "${d}"
+  making "${d}"
+  publish_unanswered "${d}" 502 200 true
+  step_of "${d}" make
+  expect "${d}" 75 'GitHub answered 502 publishing v0.1.0, and the release reads back as a draft: it is left as it is'
+  calls_are "${d}" $'\tGET\thttps://api.github.com/repos/shuwariafrica/probe/releases/77$' 1
+  calls_are "${d}" $'\tDELETE\t' 0
+  d=$(fresh unanswered_published)
+  world "${d}"
+  making "${d}"
+  publish_unanswered "${d}" 000 200 false
+  step_of "${d}" make
+  expect "${d}" 0 'recorded the release v0.1.0'
+  grep -qF 'GitHub answered 000 publishing v0.1.0, and the release reads back as published' "${d}/stdout" ||
+    fail 'the step does not say how it knows the release is published'
+  calls_are "${d}" $'\tDELETE\t' 0
+  d=$(fresh unanswered_unread)
+  world "${d}"
+  making "${d}"
+  publish_unanswered "${d}" 504 503
+  step_of "${d}" make
+  expect "${d}" 75 'GitHub answered 504 publishing v0.1.0, and 503 reading the release back: it is left as it is'
+  calls_are "${d}" $'\tDELETE\t' 0
 }
 
 crates_main "$@"

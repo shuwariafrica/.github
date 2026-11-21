@@ -3,7 +3,7 @@
 # run's pins and package's files, the keyservers' revocations, sqv's install, and the whole action
 # signing through release-key's scripts against stand-ins for GitHub's OIDC, Entra and Key Vault.
 # Usage: run.sh [--tree <directory>] [<case>...]; tests/crates.sh says the rest.
-# Needs gpg, gpgconf, sqv in /usr/bin, git, jq, yq (mikefarah's), sha256sum and dpkg-deb.
+# Needs gpg, gpgconf, sqv in /usr/bin, git, jq, yq (mikefarah's), sha256sum, dpkg-deb and python3.
 set -euo pipefail
 shopt -s inherit_errexit
 unset CDPATH
@@ -14,13 +14,64 @@ readonly HERE
 . "${HERE}/../step.sh"
 # shellcheck source=tests/crates.sh
 . "${HERE}/../crates.sh"
-TOOLS=(/usr/bin/sqv dpkg-deb)
+TOOLS=(/usr/bin/sqv dpkg-deb python3)
 
 readonly SHA=1111111111111111111111111111111111111111
 readonly API_FILE="https://api.github.com/repos/shuwariafrica/probe/contents/.github/workflows/release.yml?ref=${SHA}"
 
+# The certificate of the key home <home> as keys.openpgp.org serves one whose address is not
+# verified, into <out>: its packets with each user id, and the signatures after it, dropped; with
+# <drop> `subkeys`, each subkey and its signatures too.
+uidless() {
+  local home=$1 out=$2 drop=${3:-} fpr
+  fpr=$(primary_of "${home}")
+  g "${home}" --export "${fpr}" >"${out}.full"
+  python3 -I - "${out}.full" "${out}" "${drop}" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+dropped = {13, 14} if sys.argv[3] == "subkeys" else {13}
+out, i, dropping = bytearray(), 0, False
+while i < len(data):
+    start, b = i, data[i]
+    if b & 0x40:
+        tag, i = b & 0x3F, i + 1
+        if data[i] < 192:
+            n, i = data[i], i + 1
+        elif data[i] < 224:
+            n, i = ((data[i] - 192) << 8) + data[i + 1] + 192, i + 2
+        else:
+            n, i = int.from_bytes(data[i + 1:i + 5], "big"), i + 5
+    else:
+        tag, kind, i = (b >> 2) & 0x0F, b & 3, i + 1
+        size = (1, 2, 4)[kind]
+        n, i = int.from_bytes(data[i:i + size], "big"), i + size
+    if tag in dropped:
+        dropping = True
+    elif tag != 2:
+        dropping = False
+    if not dropping:
+        out += data[start:i + n]
+    i += n
+open(sys.argv[2], "wb").write(out)
+PY
+  ! grep -qF "${home} <" "${out}" || fail "the certificate served still holds its user id"
+}
+
+# keys.openpgp.org's answer for the project's key: <file>, or the signing key's certificate without
+# its user id; keyserver.ubuntu.com's left as it is.
+vks() {
+  local d=$1 file=${2:-}
+  if [[ -z ${file} ]]; then
+    file=${d}/vks.pgp
+    uidless signing "${file}"
+  fi
+  sed -i '/keys.openpgp.org/d' "${d}/stub/routes"
+  route "${d}" GET "https://keys.openpgp.org/vks/v1/by-fingerprint/${SIGNING_KEY}" 200 "${file}"
+}
+
 # A case's world: public-crates, a release in <case>/release from crate-package, the run's
-# release.yml (edited by <edit>) as GitHub's API serves it, keyservers holding nothing.
+# release.yml (lifted from the template, edited by <edit>) as GitHub's API serves it,
+# keyserver.ubuntu.com holding nothing and keys.openpgp.org the project's certificate.
 world() {
   local d=$1 edit=${2:-.}
   catalogue_repo "${d}"
@@ -29,6 +80,17 @@ world() {
   release_yml "${d}/release.yml" "${edit}"
   route "${d}" GET "${API_FILE}" 200 "${d}/release.yml"
   keyservers "${d}" "${SIGNING_KEY}"
+  vks "${d}"
+}
+
+# public-crates' main in the case <dir> moved on by one commit, its files changed by the command
+# <change>... run in the repository.
+catalogue_moves() {
+  local repo=$1/git/shuwariafrica/public-crates
+  shift
+  (cd -- "${repo}" && "$@")
+  git -C "${repo}" add -A
+  git -C "${repo}" -c user.name=t -c user.email=t@example.invalid commit --quiet --no-gpg-sign -m moved
 }
 
 check() {
@@ -49,6 +111,176 @@ case_the_runs_pins_and_files_admit_signing() {
   out_is "${d}" fingerprint "${SIGNING_KEY}"
   grep -qxF 'Authorization: Bearer job-token' "${d}/stub/headers" || fail 'release.yml was not read with the job token'
   [[ $(grep -c job-token "${d}/stub/argv" || true) == 0 ]] || fail 'the job token is an argument'
+}
+
+# The run's release.yml is the template lifted, and nothing else: a step the template does not hold,
+# a comment it does not hold, a placeholder left as it is, each refused before the key is read.
+case_a_release_yml_holding_anything_the_template_does_not_is_refused_before_the_key() {
+  local d
+  d=$(fresh run_step)
+  world "${d}"
+  sed -i 's|^\(      - uses: actions/checkout@.*\)$|\1\n      - run: printenv|' "${d}/release.yml"
+  grep -qx '      - run: printenv' "${d}/release.yml" || fail 'the step was not added'
+  check "${d}"
+  expect "${d}" 1 "release.yml is not public-crates' template at its gate-commit ${GATE}"
+  expect "${d}" 1 'line 20 is [      - run: printenv], and the template makes it [      - uses: shuwariafrica/.github/actions/crate-package@'
+  calls_are "${d}" 'vault|keys.openpgp.org|keyserver' 0
+  d=$(fresh comment)
+  world "${d}"
+  sed -i '1a # a line the template does not hold' "${d}/release.yml"
+  check "${d}"
+  expect "${d}" 1 'line 2 is [# a line the template does not hold], and the template makes it []'
+  d=$(fresh placeholder)
+  world "${d}"
+  sed -i "3s/${OWN}/${PLACEHOLDER_OWN}/" "${d}/release.yml"
+  grep -q "^# Lifted from public-crates' template/: ${PLACEHOLDER_OWN}" "${d}/release.yml" || fail 'the placeholder was not put back'
+  check "${d}"
+  expect "${d}" 1 "line 3 is [# Lifted from public-crates' template/: ${PLACEHOLDER_OWN}"
+}
+
+# crate-admit, crate-sign and crate-publish hold release.yml through one definition, lib.sh's, so
+# the rule cannot differ between them: each function is defined once under actions/, in
+# crate-publish/lib.sh, and each step script sources that file and calls release_yml_holds. That
+# the call holds is each action's own hold case.
+case_the_three_holds_of_release_yml_are_lib_shs_one_definition() {
+  local name found entry script source
+  for name in lifted_release_yml release_yml_holds; do
+    found=$(grep -rlE "^[[:space:]]*(function[[:space:]]+)?${name}[[:space:]]*\\(\\)" "${TREE}/actions" || true) # none is answered below
+    [[ ${found} == "${TREE}/actions/crate-publish/lib.sh" ]] || fail "${name} is defined in [${found//$'\n'/ }], not in lib.sh alone"
+  done
+  # shellcheck disable=SC2016
+  # Each script's source line, as text.
+  for entry in 'crate-admit/admit-step.sh ${HERE}/../crate-publish/lib.sh' \
+    'crate-sign/check-step.sh ${here}/../crate-publish/lib.sh' 'crate-publish/check-step.sh ${here}/lib.sh'; do
+    read -r script source <<<"${entry}"
+    grep -qxF "  source \"${source}\"" "${TREE}/actions/${script}" || fail "${script} does not source ${source}"
+    grep -qE '^  release_yml_holds "' "${TREE}/actions/${script}" || fail "${script} does not call release_yml_holds"
+  done
+}
+
+# The template is gate-commit's, not main's: a release.yml lifted from main's template, once main
+# has moved on, is refused, and one lifted from gate-commit's still signs.
+case_release_yml_is_held_to_the_template_at_gate_commit() {
+  local d
+  d=$(fresh template_at_gate)
+  world "${d}"
+  catalogue_moves "${d}" tee -a template/.github/workflows/release.yml <<<'# main has moved on' >/dev/null
+  check "${d}"
+  expect "${d}" 0 "signing for shuwariafrica/probe with ${SIGNING_KEY}"
+  d=$(fresh template_at_main)
+  world "${d}"
+  catalogue_moves "${d}" tee -a template/.github/workflows/release.yml <<<'# main has moved on' >/dev/null
+  printf '# main has moved on\n' >>"${d}/release.yml"
+  check "${d}"
+  expect "${d}" 1 "release.yml is not public-crates' template at its gate-commit ${GATE}"
+}
+
+# verify's list is one entry per platform of the project, in projects.json's order, each with
+# platforms.json's runner.
+case_verify_lists_the_projects_platforms_in_their_order() {
+  local d both='          - platform: windows-x64\n            runner: windows-2025-vs2026\n          - platform: linux-x64'
+  d=$(fresh platforms_in_order)
+  world "${d}"
+  catalogue_repo "${d}" '.platforms = ["windows-x64", "linux-x64"]'
+  sed -i "s|^          - platform: linux-x64\$|${both}|" "${d}/release.yml"
+  grep -qx '          - platform: windows-x64' "${d}/release.yml" || fail 'the platforms were not written'
+  check "${d}"
+  expect "${d}" 0 'signing for'
+  d=$(fresh platforms_other_order)
+  world "${d}"
+  catalogue_repo "${d}" '.platforms = ["linux-x64", "windows-x64"]'
+  sed -i "s|^          - platform: linux-x64\$|${both}|" "${d}/release.yml"
+  check "${d}"
+  expect "${d}" 1 'line 27 is [          - platform: windows-x64], and the template makes it [          - platform: linux-x64]'
+  d=$(fresh platforms_template)
+  world "${d}"
+  catalogue_repo "${d}" '.platforms = ["windows-x64", "linux-x64"]'
+  check "${d}"
+  expect "${d}" 1 'line 27 is [          - platform: linux-x64], and the template makes it [          - platform: windows-x64]'
+}
+
+# keys.openpgp.org, where a user's check fetches the certificate (the release's design, 2.8), serves
+# it by its fingerprint, or nothing is signed.
+case_a_key_keys_openpgp_org_does_not_serve_is_refused() {
+  local d
+  d=$(fresh vks_none)
+  world "${d}"
+  sed -i '/keys.openpgp.org/d' "${d}/stub/routes"
+  route "${d}" GET "https://keys.openpgp.org/vks/v1/by-fingerprint/${SIGNING_KEY}" 404 /dev/null
+  check "${d}"
+  expect "${d}" 1 "keys.openpgp.org serves no certificate for the project's key ${SIGNING_KEY}"
+  d=$(fresh vks_other)
+  world "${d}"
+  g stranger --export "${STRANGER_KEY}" >"${d}/stranger.pgp"
+  vks "${d}" "${d}/stranger.pgp"
+  check "${d}"
+  expect "${d}" 1 "keys.openpgp.org serves [${STRANGER_KEY}] for the project's key ${SIGNING_KEY}"
+}
+
+# A signing key's certificate in a new key home <name>, for an attacker, armored into <out>: no user
+# id, so gpg's import skips it, and a direct-key signature (made by adding the signing key as
+# designated revoker), which binds it for a reader that takes the file whole, as sqv does. The
+# armor is a public key block, the only header gpg reads a second block under.
+hidden_certificate() {
+  local name=$1 out=$2 fpr
+  make_key "${name}" cert never subkey
+  fpr=$(primary_of "${name}")
+  g signing --export "${SIGNING_KEY}" | g "${name}" --import
+  printf 'addrevoker\n%s\ny\nsave\n' "${SIGNING_KEY}" | g "${name}" --command-fd 0 --edit-key "${fpr}"
+  uidless "${name}" "${out}.bin"
+  g "${name}" --enarmor <"${out}.bin" | sed -e 's/ARMORED FILE/PUBLIC KEY BLOCK/' -e '/^Comment:/d' >"${out}"
+}
+
+# signing-keys/<name>.asc is read as a user's sqv reads it, whole: a second primary after the
+# project's, one gpg's import skips for want of a user id, is refused, naming both primaries.
+case_a_hidden_second_primary_in_the_certificate_file_is_refused() {
+  local d hidden imported listed
+  d=$(fresh hidden_primary)
+  world "${d}"
+  hidden_certificate hidden "${d}/hidden.asc"
+  hidden=$(primary_of hidden)
+  catalogue_moves "${d}" tee -a signing-keys/probe.asc <"${d}/hidden.asc" >/dev/null
+  mkdir -m 700 -- "${WORK}/keys/hidden_import"
+  g hidden_import --import "${d}/git/shuwariafrica/public-crates/signing-keys/probe.asc"
+  imported=$(g hidden_import --with-colons --list-keys | awk -F: '$1 == "pub" {n++} END {print n + 0}')
+  listed=$(g hidden_import --with-colons --show-keys "${d}/git/shuwariafrica/public-crates/signing-keys/probe.asc" |
+    awk -F: '$1 == "pub" {n++} END {print n + 0}')
+  [[ ${imported} == 1 && ${listed} == 2 ]] || fail "gpg's import holds ${imported} primaries and the file ${listed}, not 1 and 2"
+  check "${d}"
+  expect "${d}" 1 "signing-keys/probe.asc holds [${SIGNING_KEY} ${hidden}], not the project's signing_key ${SIGNING_KEY} alone"
+}
+
+# keys.openpgp.org's copy is merged by a user's sqv only where it holds the signing subkey the
+# project's certificate does, so a copy without it is refused, naming the subkey; the copy as
+# keys.openpgp.org serves a key (the primary and its signing subkey, no user id) is admitted.
+case_a_served_copy_without_the_signing_subkey_is_refused() {
+  local d
+  d=$(fresh vks_no_subkey)
+  world "${d}"
+  uidless signing "${d}/primary-alone.pgp" subkeys
+  vks "${d}" "${d}/primary-alone.pgp"
+  check "${d}"
+  expect "${d}" 1 "keys.openpgp.org serves the project's key ${SIGNING_KEY} without its signing subkey ${SIGNING_SUBKEY}"
+  d=$(fresh vks_with_subkey)
+  world "${d}"
+  check "${d}"
+  expect "${d}" 0 "signing for shuwariafrica/probe with ${SIGNING_KEY}"
+}
+
+# A release.yml the pins' second read of it cannot read is refused, not taken as holding no
+# action: a yq that answers the first read and fails the second.
+case_a_release_yml_that_does_not_read_again_is_refused() {
+  local d found
+  d=$(fresh second_read)
+  world "${d}"
+  # shellcheck disable=SC2016
+  # The stand-in's own text, expanded when it runs.
+  printf '#!/usr/bin/env bash\ncase $2 in *unique*) exec /usr/bin/yq "$@" ;; *) echo "yq: killed" >&2; exit 1 ;; esac\n' >"${d}/bin/yq"
+  chmod 755 -- "${d}/bin/yq"
+  found=$(PATH=${d}/bin:/usr/bin:/bin type -P yq)
+  [[ ${found} == "${d}/bin/yq" ]] || fail 'yq does not resolve to the stand-in'
+  check "${d}"
+  expect "${d}" 1 'release.yml does not read as YAML: yq: killed'
 }
 
 case_a_dot_github_action_at_another_commit_is_refused() {

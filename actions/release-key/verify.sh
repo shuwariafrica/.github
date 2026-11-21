@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Targets: GitHub's hosted Ubuntu runners under release-key's and crate-sign's steps (bash 5.2 or
+# later, gpg 2.4, sqv), and a developer's Linux machine for its cases.
 # Verifies each <file>.asc as one signature by C1, under gpg (VALIDSIG naming C1's primary) and under
 # sqv, carrying the notation repository-ref@shuwari.africa that names the repository and ref of the
 # run whose release-key made it. Two forms:
@@ -15,6 +17,8 @@
 # Exit 0 only when gpg and sqv both verify every signature; 65 when a published file does not import
 # or the certificate is not one primary; 70 when a signature does not verify.
 set -euo pipefail
+shopt -s inherit_errexit
+unset CDPATH
 
 readonly name=repository-ref@shuwari.africa
 usage() {

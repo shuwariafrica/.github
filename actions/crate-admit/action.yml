@@ -1,14 +1,21 @@
 name: Admit a crate release
 description: >-
   The first job of a public crate's release.yml, on the push of a `v*` tag: refuses the release
-  before anything is built unless the tag is a tag object naming this run's commit, signed once by
-  one of the project's tag signers from public-crates' keys/; the commit is on the project's main
-  first-parent line; the tree, read as data and never run, holds exactly the project's crates at
-  the tag's version, cargo configuration of the two publish-age keys alone, no rust-toolchain file,
-  one exact release in rust-toolchain.toml and no git source in Cargo.lock; and release.yml, read
+  before anything is built unless the tag is `v` and a semantic version with no build metadata, a
+  tag object naming this run's commit, signed once by one of the project's tag signers from
+  public-crates' keys/; the commit is on the project's main first-parent line; the tree, read as
+  data and never run, holds exactly the project's crates at the tag's version, each manifest giving
+  a description and a license or license-file, as crates.io requires of a crate it takes, cargo
+  configuration of the two publish-age keys alone, no rust-toolchain file, one exact release in
+  rust-toolchain.toml and no git source in Cargo.lock; and release.yml, read
   as data, runs only shuwariafrica/.github actions at this action's own commit,
   shuwariafrica/public-crates actions at its gate-commit and actions this commit's
-  actions/third-party.tsv lists at their commits, with verify on exactly the project's platforms.
+  actions/third-party.tsv lists at their commits, with verify on exactly the project's platforms,
+  and is byte for byte public-crates' template/.github/workflows/release.yml at gate-commit with
+  its placeholders filled, the rule crate-sign and crate-publish state and hold again before the
+  key and the token. A refusal fails this job before any job that waits on it starts, and in the
+  template every later job, the build among them, waits on it; any step that file places ahead of
+  this action in this job has run by then.
   The project must hold its repository id and signing key in projects.json, and the version be at
   or above its first_version. public-crates is read anonymously at main's head. The release gate's
   verdict on the tag stands apart from this one. Needs git, gpg, python3, jq and yq, as GitHub's

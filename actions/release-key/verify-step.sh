@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Targets: GitHub's hosted Ubuntu runners under release-key/verify's step (bash 5.2 or later, gpg
+# 2.4, sqv), and a developer's Linux machine for its cases.
 # The release-key/verify action's step, which verify/action.yml starts under `env -i`: verifies every
 # <file>.asc under DIRECTORY through verify.sh.
 #   - With RELEASE_HOME, the home form: against that home's key, by SUBKEY, each signature naming
@@ -11,8 +13,15 @@
 # verify.sh's and published.sh's codes pass through.
 # shellcheck disable=SC2154 # the variables above are verify/action.yml's env
 set -euo pipefail
+shopt -s inherit_errexit
+unset CDPATH
+[[ "${BASH_SOURCE@a}" == *a* ]] || {
+  printf '%s: BASH_SOURCE is set by the environment\n' "$0" >&2
+  exit 2
+}
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+self=$(realpath -- "${BASH_SOURCE[0]}")
+here=$(dirname -- "${self}")
 readonly here
 : "${RELEASE_HOME?}" "${SUBKEY?}" "${DIRECTORY:?}" "${REPOSITORY_REF?}" "${RUNNER_TEMP:?}"
 work=$(mktemp -d -p "${RUNNER_TEMP}")

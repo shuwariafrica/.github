@@ -1,18 +1,29 @@
 name: Sign a crate release
 description: >-
   Signs a public crate's SHA256SUMS with the project's own key, in its release job behind the
-  release gate. First it reads release.yml at this run's commit through the API, as data, and
-  refuses unless every action there is a shuwariafrica/.github action at this action's own commit,
-  a shuwariafrica/public-crates action at public-crates' gate-commit, or an action on this commit's
-  actions/third-party.tsv at a commit listed for it, so every job before it ran code the
-  organisation fixed; and it holds SHA256SUMS to crate-package's digest. Then, through release-key's
-  scripts at this same commit, it reads the secret `subkey` of the project's vault as the
-  environment's federated identity, every line masked, imports it into a new GnuPG home, proves its
-  primary is projects.json's signing_key at public-crates' main, refuses a primary or subkey that
-  keys.openpgp.org or keyserver.ubuntu.com publishes as revoked (a keyserver that does not answer
-  refuses too), signs SHA256SUMS and verifies the signature under gpg and sqv, which it installs
-  from Ubuntu's package held to its SHA-256. The home is removed when the action ends, however it
-  ends. The job needs `permissions: id-token: write` and `contents: read`.
+  release gate. Before any key is read, it reads release.yml at this run's commit through the API,
+  as data, and refuses it unless both hold. First, every action there is a shuwariafrica/.github
+  action at this action's own commit, a shuwariafrica/public-crates action at public-crates'
+  gate-commit, or an action on this commit's actions/third-party.tsv at a commit listed for it.
+  Second, the file is byte for byte public-crates' template/.github/workflows/release.yml at
+  gate-commit with its placeholders filled, and nothing else: every
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa replaced by this action's own commit, every
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb by gate-commit, and the lines below the template's one
+  `include:` line that are indented deeper than it replaced by two lines per platform of the
+  project in projects.json's order, `- platform: <platform>` at the indentation of the first line
+  replaced and `  runner: <runner>` below it, <runner> being the one platforms.json gives that
+  platform. Where it holds, every step of the run is the template's. Where it does not, the
+  refusal comes before any key is read, and after any step that file places ahead of this action
+  in this job, which has run by then. It also holds SHA256SUMS to
+  crate-package's digest. Then, through release-key's scripts at this same commit, it reads the
+  secret `subkey` of the project's vault as the environment's federated identity, every line
+  masked, imports it into a new GnuPG home, proves its primary is projects.json's signing_key at
+  public-crates' main,
+  refuses a primary or subkey that keys.openpgp.org or keyserver.ubuntu.com publishes as revoked
+  (a keyserver that does not answer refuses too) and a key whose certificate keys.openpgp.org does
+  not serve by its fingerprint, signs SHA256SUMS and verifies the signature under gpg and sqv,
+  which it installs from Ubuntu's package held to its SHA-256. The home is removed when the action
+  ends, however it ends. The job needs `permissions: id-token: write` and `contents: read`.
 inputs:
   tenant-id:
     description: The Entra tenant.

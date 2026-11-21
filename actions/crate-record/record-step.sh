@@ -5,7 +5,7 @@
 # GitHub carries the job's token from a header file, never an argument; the project's releases are
 # read with it, so a draft is seen.
 # Environment: STEP, REPOSITORY, REPOSITORY_ID, REF, SHA (the run's), DIRECTORY, DIGEST, VERSION,
-# CRATES; for prepare OBJECT, COMMIT, SIGNER and GIT_BASE; for make BUNDLE and UPLOADS; API,
+# CRATES; for prepare OBJECT, COMMIT and SIGNER; for make BUNDLE and UPLOADS; API, GIT_BASE,
 # RUNNER_TEMP; the job's token on descriptor 3.
 # prepare writes subjects and predicate.json into the new directory RUNNER_TEMP/crate-record.
 # Exit 0 when done; 1 refused; 64 for an invocation it refuses; 69 for an absent tool; 75 when
@@ -72,15 +72,21 @@ standing() {
   printf 'equal\n'
 }
 
+# SHA256SUMS.asc in DIRECTORY verified for the project as crate-publish verifies it, against
+# public-crates' main fetched anonymously into WORK/public-crates, in new homes under WORK.
+signed_by_the_project() {
+  local project
+  catalogue "${WORK}/public-crates" >/dev/null
+  project=$(project_of "${WORK}/public-crates" "${REPOSITORY}" "${REPOSITORY_ID}")
+  verify_release "${DIRECTORY}" "${WORK}/public-crates" "${project}" "${WORK}"
+}
+
 prepare_step() {
-  local catalogue project crates_lines releases
+  local crates_lines releases
   [[ ${OBJECT} =~ ^[0-9a-f]{40}$ && ${COMMIT} =~ ^[0-9a-f]{40}$ ]] || die "the tag object or the commit is not 40 hexadecimal digits"
   [[ ${SIGNER} =~ ^[0-9A-F]{40}$ ]] || die "the signer ${SIGNER} is not a v4 fingerprint"
   [[ ${COMMIT} == "${SHA}" ]] || die "admit's commit ${COMMIT} is not this run's ${SHA}"
-  catalogue=${WORK}/public-crates
-  catalogue "${catalogue}" >/dev/null
-  project=$(project_of "${catalogue}" "${REPOSITORY}" "${REPOSITORY_ID}")
-  verify_release "${DIRECTORY}" "${catalogue}" "${project}" "${WORK}"
+  signed_by_the_project
   releases=$(releases_of_tag)
   standing "${releases}" >/dev/null
   OUT=${RUNNER_TEMP}/crate-record
@@ -104,10 +110,35 @@ drop_draft() {
   [[ ${code} == 204 ]] || printf '::warning::the draft release %s could not be deleted (%s)\n' "${DRAFT}" "${code}" >&2
 }
 
+# After a PATCH of the draft DRAFT that GitHub did not answer with 200 (<code>): the release read
+# back by id, and nothing deleted in this run whatever it reads, since GitHub can still commit a
+# publication it answered with a 502 or 504, and an immutable release deleted keeps its tag from
+# ever being reused. Published, it stands and the step is done; otherwise it is left for a re-run,
+# which accepts it if it reads as published then, and else deletes the draft and makes it again.
+published_after() {
+  local code=$1 id=${DRAFT} answered draft
+  DRAFT=''
+  answered=$(fetch "${API}/repos/${REPOSITORY}/releases/${id}" "${WORK}/draft" \
+    --header @"${WORK}/authorization" --header 'Accept: application/vnd.github+json')
+  if [[ ${answered} != 200 ]]; then
+    unreadable "GitHub answered ${code} publishing ${TAG}, and ${answered} reading the release back: it is left as it is, for a re-run to judge"
+  fi
+  draft=$(jq -r '.draft' "${WORK}/draft" 2>/dev/null) || draft=unread # an answer jq cannot read is no draft's
+  case ${draft} in
+    true) unreadable "GitHub answered ${code} publishing ${TAG}, and the release reads back as a draft: it is left as it is, and a re-run deletes it and makes it again if it is still a draft then" ;;
+    false) printf '::warning::GitHub answered %s publishing %s, and the release reads back as published\n' "${code}" "${TAG}" ;;
+    *)
+      unreadable "GitHub answered ${code} publishing ${TAG}, and the release read back holds no draft field: it is left as it is"
+      ;;
+  esac
+}
+
 make_step() {
   local releases state id code file body make_latest list
   local -a drafts uploads
   [[ -f ${BUNDLE} ]] || die "the attestation's bundle ${BUNDLE} is absent"
+  # The job's attest step, another's code, ran between prepare and here.
+  signed_by_the_project
   releases=$(releases_of_tag)
   state=$(standing "${releases}")
   if [[ ${state} == equal ]]; then
@@ -145,7 +176,9 @@ make_step() {
   body=${WORK}/publish.json
   printf '{"draft":false}' >"${body}"
   code=$(send PATCH "${API}/repos/${REPOSITORY}/releases/${DRAFT}" "${body}" application/json "${WORK}/answer")
-  [[ ${code} == 200 ]] || unreadable "GitHub answered ${code} publishing ${TAG}: $(<"${WORK}/answer")"
+  if [[ ${code} != 200 ]]; then
+    published_after "${code}"
+  fi
   DRAFT=''
   printf 'recorded the release %s\n' "${TAG}"
 }
@@ -153,7 +186,7 @@ make_step() {
 main() {
   local self here request
   : "${STEP:?}" "${REPOSITORY:?}" "${REPOSITORY_ID:?}" "${REF:?}" "${SHA:?}" "${DIRECTORY:?}" "${DIGEST:?}"
-  : "${VERSION:?}" "${CRATES:?}" "${API:?}" "${RUNNER_TEMP:?}"
+  : "${VERSION:?}" "${CRATES:?}" "${API:?}" "${GIT_BASE:?}" "${RUNNER_TEMP:?}"
   self=$(realpath -- "${BASH_SOURCE[0]}")
   here=$(dirname -- "${self}")
   # shellcheck source=actions/crate-publish/lib.sh
@@ -188,7 +221,7 @@ main() {
   check_files "${DIRECTORY}" "${DIGEST}" "${CRATES}" "${VERSION}"
   case ${STEP} in
     prepare)
-      : "${OBJECT:?}" "${COMMIT:?}" "${SIGNER:?}" "${GIT_BASE:?}"
+      : "${OBJECT:?}" "${COMMIT:?}" "${SIGNER:?}"
       prepare_step
       ;;
     make)

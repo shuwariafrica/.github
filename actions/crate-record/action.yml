@@ -9,11 +9,17 @@ description: >-
   (each `.crate`'s line of SHA256SUMS) and predicate (the repository and its id, the tag, the tag
   object, the commit, the signer and the version) as subjects and predicate.json in
   RUNNER_TEMP/crate-record, where the release's design names them for the attest step, since the
-  release gate takes an attest step's subjects only from text the workflow's commit fixes. `make` makes the release v<version>, a pre-release where the
-  version has one, holding every file, SHA256SUMS.asc and the attestation's bundle, with the
-  changelog's entry as its notes. A published release of the tag whose files are these is
-  accepted, so a re-run completes; a draft an earlier attempt left is deleted and made again; a
-  draft this step made is deleted when it stops short of publishing it. The job needs
+  release gate takes an attest step's subjects only from text the workflow's commit fixes. `make`
+  verifies SHA256SUMS.asc again as `prepare` does, since the attest step runs between them, then
+  makes the release v<version>, a pre-release where the version has one, holding every file,
+  SHA256SUMS.asc and the attestation's bundle, with the changelog's entry as its notes. A published
+  release of the tag whose files are these is accepted, so a re-run completes; a draft an earlier
+  attempt left is deleted and made again; a draft this step made is deleted when it stops short of
+  publishing it. Where GitHub answers the publication with anything but 200, the release is read
+  back by its id and nothing is deleted in that run, since GitHub can still commit a publication it
+  answered with an error, and a published release is immutable and its tag never reusable once it
+  is deleted: read back as published, it stands; otherwise the job fails for a re-run, which
+  accepts it published or deletes it as a draft and makes it again. The job needs
   `permissions: contents: write`, with `id-token: write` and `attestations: write` for its attest
   step.
 inputs:

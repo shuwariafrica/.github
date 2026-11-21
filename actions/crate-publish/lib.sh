@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # What the crate-* actions' steps share, sourced by each: public-crates' main read anonymously, a
-# project's entry and signing certificate there, the release's files held to crate-package's
+# project's entry and signing certificate there, the run's release.yml held to the project's lifted
+# template, the keyservers' copies of the certificate, the release's files held to crate-package's
 # digest, SHA256SUMS.asc verified against the project's key, the upload bodies held to the signed
 # crates, and crates.io's index and API. git reaches public-crates at GIT_BASE; every other read is
 # curl's, with the User-Agent crates.io's data-access policy asks of a client.
@@ -86,26 +87,140 @@ project_of() {
   jq -c '.[0]' <<<"${found}"
 }
 
+# The primary keys of the `gpg --with-colons` listing <listing>, one fingerprint a line.
+primaries_in() {
+  awk -F: '$1 == "pub" {want = 1; next} $1 == "fpr" && want {print $10; want = 0}' <<<"$1"
+}
+
 # The project's signing certificate, signing-keys/<name>.asc of the catalogue <dir>, into <out>,
-# held to <fingerprint>: one primary, that one, imported into the new home <home>.
+# held to <fingerprint>: one primary, that one, in the file itself, which a user's sqv reads whole
+# (gpg's import skips a certificate with no user ID, so its listing would not show one), and
+# imported into the new home <home>.
 certificate_of() {
   local dir=$1 name=$2 out=$3 fingerprint=$4 home=$5 listing primaries
   git -C "${dir}" show "refs/heads/main:signing-keys/${name}.asc" >"${out}" 2>/dev/null ||
     die "public-crates' main holds no signing-keys/${name}.asc"
   mkdir -m 700 -- "${home}"
+  listing=$(gpg --homedir "${home}" --batch --with-colons --show-keys "${out}" 2>/dev/null) ||
+    die "signing-keys/${name}.asc does not read"
+  primaries=$(primaries_in "${listing}")
+  [[ ${primaries} == "${fingerprint}" ]] ||
+    die "signing-keys/${name}.asc holds [${primaries//$'\n'/ }], not the project's signing_key ${fingerprint} alone"
   gpg --homedir "${home}" --batch --quiet --import "${out}" 2>/dev/null ||
     die "signing-keys/${name}.asc does not import"
   listing=$(gpg --homedir "${home}" --batch --with-colons --list-keys)
-  primaries=$(awk -F: '$1 == "pub" {want = 1; next} $1 == "fpr" && want {print $10; want = 0}' <<<"${listing}")
+  primaries=$(primaries_in "${listing}")
   [[ ${primaries} == "${fingerprint}" ]] ||
-    die "signing-keys/${name}.asc holds [${primaries//$'\n'/ }], not the project's signing_key ${fingerprint} alone"
+    die "signing-keys/${name}.asc holds [${primaries//$'\n'/ }] once imported, not the project's signing_key ${fingerprint} alone"
+}
+
+# The two commits public-crates' template/.github/workflows/release.yml stands in for, which a
+# project's lifting fills: shuwariafrica/.github's that holds the crate-* actions, and gate-commit.
+readonly TEMPLATE_DOT_GITHUB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+readonly TEMPLATE_GATE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# The release.yml the project <project json> lifts from the catalogue <dir> at <gate>, into <out>:
+# template/.github/workflows/release.yml at <gate> (fetched into <dir>), line for line, with every
+# TEMPLATE_DOT_GITHUB replaced by <own> and every TEMPLATE_GATE by <gate>, and the lines below its
+# one `include:` line that are indented deeper than it replaced by two lines per platform of the
+# project, in projects.json's order: `- platform: <platform>` at the indentation of the first line
+# replaced, and `  runner: <runner>` below it, the runner platforms.json's at main.
+lifted_release_yml() {
+  local dir=$1 gate=$2 own=$3 project=$4 out=$5 answer rc=0 platforms entries line nl include='' entry='' found=0
+  local platform runner
+  answer=$(git -C "${dir}" fetch --quiet --depth 1 --no-tags -- "${GIT_BASE:?}/${CATALOGUE}" "${gate}" 2>&1) || rc=$?
+  ((rc == 0)) || unreadable "public-crates at its gate-commit ${gate} cannot be read: ${answer//$'\n'/ }"
+  git -C "${dir}" show "${gate}:template/.github/workflows/release.yml" >"${out}.template" 2>/dev/null ||
+    die "public-crates at its gate-commit ${gate} holds no template/.github/workflows/release.yml"
+  platforms=$(catalogue_file "${dir}" platforms.json)
+  entries=$(jq -r --argjson p "${platforms}" '.platforms[] | . as $n
+    | [$n, ($p[$n].runner // error("platforms.json has no platform \($n)"))] | join(" ")' <<<"${project}" 2>&1) ||
+    die "the project names a platform public-crates' platforms.json does not hold: ${entries}"
+  [[ -n ${entries} ]] || die "the project names no platform for verify"
+  ! grep -qvE '^[A-Za-z0-9][A-Za-z0-9._-]* [A-Za-z0-9][A-Za-z0-9._-]*$' <<<"${entries}" ||
+    die "a platform or runner of the project is not a plain name: ${entries//$'\n'/; }"
+  : >"${out}"
+  while :; do
+    nl=$'\n'
+    IFS= read -r line || {
+      [[ -n ${line} ]] || break
+      nl=''
+    }
+    if [[ -n ${include} ]]; then
+      if [[ ${line} == "${include} "* ]]; then
+        if [[ -z ${entry} ]]; then
+          entry=${line%%[! ]*}
+          [[ ${line#"${entry}"} == '- '* ]] || die "the template's include: list at ${gate} opens with no entry"
+          while IFS=' ' read -r platform runner; do
+            printf '%s- platform: %s\n%s  runner: %s\n' "${entry}" "${platform}" "${entry}" "${runner}" >>"${out}"
+          done <<<"${entries}"
+        fi
+        [[ -n ${nl} ]] || break
+        continue
+      fi
+      [[ -n ${entry} ]] || die "the template's include: list at ${gate} holds no entry"
+      include=''
+    fi
+    if [[ ${line} =~ ^(\ *)include:$ ]]; then
+      include=${BASH_REMATCH[1]}
+      found=$((found + 1))
+    fi
+    line=${line//"${TEMPLATE_DOT_GITHUB}"/"${own}"}
+    printf '%s%s' "${line//"${TEMPLATE_GATE}"/"${gate}"}" "${nl}" >>"${out}"
+    [[ -n ${nl} ]] || break
+  done <"${out}.template"
+  ((found == 1)) || die "the template at ${gate} holds ${found} include: lines, and its lifting fills one"
+  [[ -z ${include} || -n ${entry} ]] || die "the template's include: list at ${gate} holds no entry"
+}
+
+# The run's release.yml <file> is exactly the project's lifted template (lifted_release_yml, into
+# <out>), so none of its steps runs what the template does not; refused naming the first line apart.
+release_yml_holds() {
+  local file=$1 dir=$2 gate=$3 own=$4 project=$5 out=$6 differ line expected found
+  lifted_release_yml "${dir}" "${gate}" "${own}" "${project}" "${out}"
+  if cmp --silent -- "${out}" "${file}"; then
+    return 0
+  fi
+  differ=$(cmp -- "${out}" "${file}" 2>&1 || true) # the difference is the answer
+  line=1
+  [[ ! ${differ} =~ line\ ([0-9]+) ]] || line=${BASH_REMATCH[1]}
+  expected=$(sed -n "${line}p" "${out}")
+  found=$(sed -n "${line}p" "${file}")
+  die "release.yml is not public-crates' template at its gate-commit ${gate} with its commits and verify's platforms filled in: line ${line} is [${found}], and the template makes it [${expected}]"
+}
+
+# keys.openpgp.org serves the project's certificate, the one a user's check fetches (the release's
+# design, 2.8): <published>/vks.asc, what published.sh fetched there, holds one primary, which is
+# <fingerprint>, and every subkey of <certificate>, the repository's, that can sign, read in the new
+# home <home>. A user's sqv merges the two copies only where both hold the signing subkey, so a
+# served copy without it would not carry a revocation to them.
+vks_serves() {
+  local published=$1 fingerprint=$2 home=$3 certificate=$4 listing primaries signing served subkey
+  [[ -s ${published}/vks.asc ]] ||
+    die "keys.openpgp.org serves no certificate for the project's key ${fingerprint}, which a user's check fetches there"
+  mkdir -m 700 -- "${home}"
+  listing=$(gpg --homedir "${home}" --batch --with-colons --show-keys "${published}/vks.asc" 2>/dev/null) ||
+    listing='' # what gpg cannot read lists no primary, refused below
+  primaries=$(primaries_in "${listing}")
+  [[ ${primaries} == "${fingerprint}" ]] ||
+    die "keys.openpgp.org serves [${primaries//$'\n'/ }] for the project's key ${fingerprint}, not that certificate alone"
+  signing=$(gpg --homedir "${home}" --batch --with-colons --show-keys "${certificate}" 2>/dev/null) ||
+    die "the project's certificate ${certificate##*/} does not read"
+  signing=$(awk -F: '$1 == "sub" {want = ($12 ~ /s/); next} $1 == "fpr" && want {print $10; want = 0}' <<<"${signing}")
+  served=$(awk -F: '$1 == "sub" {want = 1; next} $1 == "fpr" && want {print $10; want = 0}' <<<"${listing}")
+  while IFS= read -r subkey; do
+    [[ -n ${subkey} ]] || continue
+    grep -qxF -- "${subkey}" <<<"${served}" ||
+      die "keys.openpgp.org serves the project's key ${fingerprint} without its signing subkey ${subkey}"
+  done <<<"${signing}"
 }
 
 # The keys of <certificate> the keyservers publish as revoked, one fingerprint a line: what
-# release-key's published.sh fetches for its primary, merged into a copy in the new home <home> by
-# merge-only, which adds only what that primary signed, and read for gpg's validity `r`. Neither
-# copy enters the home a signature is verified in, so a keyserver adds no key there. A keyserver
-# that does not answer refuses (published.sh's 75).
+# release-key's published.sh fetches for its primary (left in <home>.published, as hkp.asc and
+# vks.asc), merged into a copy in the new home <home> by merge-only, which adds only what that
+# primary signed, and read for gpg's validity `r`. Neither copy enters the home a signature is
+# verified in, so a keyserver adds no key there. A keyserver that does not answer refuses
+# (published.sh's 75).
 revoked_keys() {
   local certificate=$1 home=$2 published=$2.published file rc=0 listing
   mkdir -m 700 -- "${home}"

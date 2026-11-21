@@ -1,21 +1,36 @@
 name: Publish a crate release
 description: >-
   Publishes a public crate's signed release to crates.io by trusted publishing, in its release job
-  behind the release gate, with curl, jq and gpg alone: nothing of cargo or the project. Its inputs
-  are the run's own artefacts, downloaded by id, never the GitHub release. Before any token it holds
-  SHA256SUMS to crate-package's digest and every file to SHA256SUMS; verifies SHA256SUMS.asc in a
-  new GnuPG home holding public-crates' signing-keys/<repository>.asc alone, read at main's head
-  and held to projects.json's signing_key, requiring one good signature by a key that neither
+  behind the release gate, with curl, jq, git and gpg alone: nothing of cargo or the project. Its
+  inputs are the run's own artefacts, downloaded by id, never the GitHub release. Before any token
+  it refuses a run of any workflow but the project's release.yml, and a release.yml at the run's
+  commit (fetched anonymously from the project) that is not byte for byte public-crates'
+  template/.github/workflows/release.yml at gate-commit with its placeholders filled, and nothing
+  else: every aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa replaced by this action's own commit, every
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb by gate-commit, and the lines below the template's one
+  `include:` line that are indented deeper than it replaced by two lines per platform of the
+  project in projects.json's order, `- platform: <platform>` at the indentation of the first line
+  replaced and `  runner: <runner>` below it, <runner> being the one platforms.json gives that
+  platform. Where it holds, every step of the run is the template's. Where it does not, the
+  refusal comes before any token is asked for, and after any step that file places ahead of this
+  action in this job, which has run by then. It holds SHA256SUMS to
+  crate-package's digest and every file to SHA256SUMS; verifies SHA256SUMS.asc in a new GnuPG home
+  holding public-crates' signing-keys/<repository>.asc alone, read at main's head and held to
+  projects.json's signing_key, requiring one good signature by a key that neither
   keys.openpgp.org nor keyserver.ubuntu.com publishes as revoked (a keyserver that does not answer
-  refuses); refuses a crate
-  crate-admit did not admit, and an upload body whose `.crate` is not the signed one. Then, in the
-  signed order: a crate crates.io's index holds at the version with the signed digest is skipped;
-  with another digest the job fails; a crate crates.io does not hold fails the job, its summary
-  naming what the owner's act for a first publication takes, and holding no line to run; one not
-  bound to trusted publishing alone, or
-  with owners other than projects.json's crates_io_owners, fails it. Otherwise one step exchanges
-  the job's OIDC token for a crates.io token, masks it, uploads each body in order, waiting for the
-  index between, and revokes the token as it ends. The job needs `permissions: id-token: write`.
+  refuses); refuses a crate crate-admit did not admit, and an upload body whose `.crate` is not
+  the signed one. Then, in the signed order: a crate crates.io's index holds at the version with
+  the signed digest is skipped; with another digest the job fails; a crate crates.io does not hold
+  fails the job, its summary naming what the owner's act for a first publication takes, in the
+  signed order, which binds the owner's lines, and holding no line to run; one not bound to trusted
+  publishing alone, or with owners other than projects.json's crates_io_owners, fails it.
+  Otherwise one step exchanges the job's OIDC token for a crates.io token, masks it, uploads each
+  body in order, waiting for the index between, and revokes the token as it ends. crates.io's
+  refusal of a body (a 4xx answer other than 401, 403 or 429) fails the job, since a re-run is
+  refused the same way; any other answer may be taken by a re-run, its refusal of the token (401
+  or 403) among them, since the token lives 30 minutes and the waits for the index can outlast it,
+  and a re-run takes a new token and skips what is published. The job needs
+  `permissions: id-token: write`.
 inputs:
   directory:
     description: >-
@@ -47,6 +62,8 @@ runs:
         REPOSITORY: ${{ github.repository }}
         REPOSITORY_ID: ${{ github.repository_id }}
         REF: ${{ github.ref }}
+        SHA: ${{ github.sha }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
         RUN_ID: ${{ github.run_id }}
         DIRECTORY: ${{ inputs.directory }}
         DIGEST: ${{ inputs.digest }}
@@ -71,7 +88,8 @@ runs:
         exec /usr/bin/env -i PATH=/usr/bin:/bin \
           RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
           GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:?}" GITHUB_ACTION_PATH="${GITHUB_ACTION_PATH:?}" \
-          REPOSITORY="${REPOSITORY}" REPOSITORY_ID="${REPOSITORY_ID}" REF="${REF}" RUN_ID="${RUN_ID}" DIRECTORY="${DIRECTORY}" \
+          REPOSITORY="${REPOSITORY}" REPOSITORY_ID="${REPOSITORY_ID}" REF="${REF}" SHA="${SHA}" WORKFLOW_REF="${WORKFLOW_REF}" \
+          RUN_ID="${RUN_ID}" DIRECTORY="${DIRECTORY}" \
           DIGEST="${DIGEST}" VERSION="${VERSION}" CRATES="${CRATES}" GIT_BASE="${GIT_BASE}" \
           CRATES_IO="${CRATES_IO}" INDEX="${INDEX}" \
           /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH}/check-step.sh"

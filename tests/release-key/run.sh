@@ -298,6 +298,20 @@ case_published_refuses_a_keyserver_that_does_not_answer() {
   expect "${d}" 75 'did not answer for'
 }
 
+# Where the caller's environment holds BASH_SOURCE, bash never fills the array, so a script would
+# take its own directory from the caller: each script that reads it refuses to run.
+case_scripts_refuse_a_bash_source_from_the_environment() {
+  local d script status
+  d=$(fresh bash_source)
+  for script in import-step.sh sign-step.sh sign.sh verify-step.sh; do
+    status=0
+    env -i PATH=/usr/bin:/bin BASH_SOURCE=/elsewhere/script bash --noprofile --norc "${tree}/actions/release-key/${script}" \
+      </dev/null >"${d}/stdout" 2>"${d}/stderr" || status=$?
+    printf '%s\n' "${status}" >"${d}/status"
+    expect "${d}" 2 "${tree}/actions/release-key/${script}: BASH_SOURCE is set by the environment"
+  done
+}
+
 mkdir -p "${work}/keys" "${work}/cases"
 key c1
 key impostor
