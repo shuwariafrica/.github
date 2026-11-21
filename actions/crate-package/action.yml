@@ -1,0 +1,62 @@
+name: Package a crate release
+description: >-
+  Packages the admitted crates from a clean checkout of this run's commit with `cargo package
+  --workspace --locked --no-verify`, run outside the tree under a new CARGO_HOME, a target of its
+  own and RUSTUP_TOOLCHAIN set to the admitted release, so nothing of the tree runs or is read as
+  configuration. Writes each crate's `.crate` and crates.io upload body (`.upload`), `order` (the
+  publishing order), `changelog.md` (CHANGELOG.md's entry for the version) and SHA256SUMS over
+  them into a new directory, and refuses a crate crate-admit did not admit. Needs rustup in the
+  runner's ~/.cargo/bin, as GitHub's Ubuntu image has it, and jq.
+inputs:
+  path:
+    description: The checkout of this run's commit, relative to the workspace.
+    required: true
+  toolchain:
+    description: crate-admit's `toolchain` output.
+    required: true
+  version:
+    description: crate-admit's `version` output.
+    required: true
+  crates:
+    description: crate-admit's `crates` output.
+    required: true
+outputs:
+  directory:
+    description: The directory holding the release's files and SHA256SUMS, for the job to upload.
+    value: ${{ steps.package.outputs.directory }}
+  digest:
+    description: The SHA-256 of SHA256SUMS, which every later job holds the files to.
+    value: ${{ steps.package.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    # The step runs as release-key's do: the image's bash in POSIX mode, env -i handing the script
+    # only the variables named, and this step's own env, merged last, setting aside what bash, glibc
+    # and the loader read before the script's first line. HOME passes for rustup's own location,
+    # which the image puts in the runner's home rather than /usr/bin.
+    - name: Package
+      id: package
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        CHECKOUT: ${{ inputs.path }}
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        VERSION: ${{ inputs.version }}
+        CRATES: ${{ inputs.crates }}
+        SHA: ${{ github.sha }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
+      run: |
+        set -euo pipefail
+        exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="${HOME:?}" \
+          RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" GITHUB_WORKSPACE="${GITHUB_WORKSPACE:?}" \
+          CHECKOUT="${CHECKOUT}" TOOLCHAIN="${TOOLCHAIN}" VERSION="${VERSION}" CRATES="${CRATES}" SHA="${SHA}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/package-step.sh"

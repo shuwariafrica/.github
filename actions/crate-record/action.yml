@@ -1,0 +1,103 @@
+name: Record a crate release
+description: >-
+  Records a public crate's release in its own repository, in its release job behind the release
+  gate, in two steps around the job's own attest step. `prepare` holds SHA256SUMS to
+  crate-package's digest, refuses any file SHA256SUMS does not name or a crate crate-admit did not
+  admit, verifies SHA256SUMS.asc as crate-publish does (public-crates' signing-keys/<repository>.asc
+  at main's head, held to projects.json's signing_key, with the keyservers' revocations), refuses a
+  release of the tag that is neither this one nor a draft, and writes the attest step's subjects
+  (each `.crate`'s line of SHA256SUMS) and predicate (the repository and its id, the tag, the tag
+  object, the commit, the signer and the version) as subjects and predicate.json in
+  RUNNER_TEMP/crate-record, where the release's design names them for the attest step, since the
+  release gate takes an attest step's subjects only from text the workflow's commit fixes. `make` makes the release v<version>, a pre-release where the
+  version has one, holding every file, SHA256SUMS.asc and the attestation's bundle, with the
+  changelog's entry as its notes. A published release of the tag whose files are these is
+  accepted, so a re-run completes; a draft an earlier attempt left is deleted and made again; a
+  draft this step made is deleted when it stops short of publishing it. The job needs
+  `permissions: contents: write`, with `id-token: write` and `attestations: write` for its attest
+  step.
+inputs:
+  step:
+    description: "`prepare`, before the attest step, or `make`, after it."
+    required: true
+  directory:
+    description: >-
+      The directory holding crate-package's files and crate-sign's SHA256SUMS.asc, each downloaded
+      by its artefact's id.
+    required: true
+  digest:
+    description: crate-package's `digest` output.
+    required: true
+  version:
+    description: crate-admit's `version` output.
+    required: true
+  crates:
+    description: crate-admit's `crates` output.
+    required: true
+  object:
+    description: crate-admit's `object` output; `prepare` alone.
+    required: false
+    default: ""
+  commit:
+    description: crate-admit's `commit` output; `prepare` alone.
+    required: false
+    default: ""
+  signer:
+    description: crate-admit's `signer` output; `prepare` alone.
+    required: false
+    default: ""
+  bundle:
+    description: The attest step's `bundle-path` output; `make` alone.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # The step runs as release-key's do. The shell is the image's bash in POSIX mode, so no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`; env -i
+    # then hands the script only the variables named, and the token goes on descriptor 3, never
+    # into an argument list. Every value is the step's own env, which the runner merges last. Each
+    # of the last eleven sets aside what bash, glibc or the loader reads before the script's first
+    # line; LC_ALL=C also keeps glibc from loading a character-set converter as bash starts.
+    - name: Record
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        STEP: ${{ inputs.step }}
+        TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        REF: ${{ github.ref }}
+        SHA: ${{ github.sha }}
+        DIRECTORY: ${{ inputs.directory }}
+        DIGEST: ${{ inputs.digest }}
+        VERSION: ${{ inputs.version }}
+        CRATES: ${{ inputs.crates }}
+        OBJECT: ${{ inputs.object }}
+        COMMIT: ${{ inputs.commit }}
+        SIGNER: ${{ inputs.signer }}
+        BUNDLE: ${{ inputs.bundle }}
+        API: https://api.github.com
+        UPLOADS: https://uploads.github.com
+        GIT_BASE: https://github.com
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
+      run: |
+        set -euo pipefail
+        exec 3<<TOKEN
+        ${TOKEN}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin RUNNER_TEMP="${RUNNER_TEMP:?}" \
+          STEP="${STEP}" REPOSITORY="${REPOSITORY}" REPOSITORY_ID="${REPOSITORY_ID}" REF="${REF}" SHA="${SHA}" \
+          DIRECTORY="${DIRECTORY}" DIGEST="${DIGEST}" VERSION="${VERSION}" CRATES="${CRATES}" \
+          OBJECT="${OBJECT}" COMMIT="${COMMIT}" SIGNER="${SIGNER}" BUNDLE="${BUNDLE}" \
+          API="${API}" UPLOADS="${UPLOADS}" GIT_BASE="${GIT_BASE}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/record-step.sh"

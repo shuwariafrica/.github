@@ -1,0 +1,75 @@
+name: Admit a crate release
+description: >-
+  The first job of a public crate's release.yml, on the push of a `v*` tag: refuses the release
+  before anything is built unless the tag is a tag object naming this run's commit, signed once by
+  one of the project's tag signers from public-crates' keys/; the commit is on the project's main
+  first-parent line; the tree, read as data and never run, holds exactly the project's crates at
+  the tag's version, cargo configuration of the two publish-age keys alone, no rust-toolchain file,
+  one exact release in rust-toolchain.toml and no git source in Cargo.lock; and release.yml, read
+  as data, runs only shuwariafrica/.github actions at this action's own commit,
+  shuwariafrica/public-crates actions at its gate-commit and actions this commit's
+  actions/third-party.tsv lists at their commits, with verify on exactly the project's platforms.
+  The project must hold its repository id and signing key in projects.json, and the version be at
+  or above its first_version. public-crates is read anonymously at main's head. The release gate's
+  verdict on the tag stands apart from this one. Needs git, gpg, python3, jq and yq, as GitHub's
+  Ubuntu image has them.
+outputs:
+  version:
+    description: The version the tag names, without its `v`.
+    value: ${{ steps.admit.outputs.version }}
+  crates:
+    description: The project's crates as a JSON array, each after every crate it depends on.
+    value: ${{ steps.admit.outputs.crates }}
+  toolchain:
+    description: The one exact Rust release rust-toolchain.toml names.
+    value: ${{ steps.admit.outputs.toolchain }}
+  commit:
+    description: The commit the tag names, which is this run's.
+    value: ${{ steps.admit.outputs.commit }}
+  object:
+    description: The tag object.
+    value: ${{ steps.admit.outputs.object }}
+  signer:
+    description: The fingerprint of the key that signed the tag, a subkey or the primary.
+    value: ${{ steps.admit.outputs.signer }}
+  primary:
+    description: The tag signer's primary fingerprint, one of the project's tag_signers.
+    value: ${{ steps.admit.outputs.primary }}
+runs:
+  using: composite
+  steps:
+    # The step runs as release-key's do. The shell is the image's bash in POSIX mode, so no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`, and env -i
+    # then hands the script only the variables named. Every value is this step's own env, which the
+    # runner merges last, so the calling job can set none of them. Each of the last eleven sets
+    # aside what bash, glibc or the loader reads before the script's first line; LC_ALL=C also keeps
+    # glibc from loading a character-set converter as bash starts.
+    - name: Admit
+      id: admit
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        EVENT: ${{ github.event_name }}
+        REPOSITORY: ${{ github.repository }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        REF: ${{ github.ref }}
+        SHA: ${{ github.sha }}
+        GIT_BASE: https://github.com
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
+      run: |
+        set -euo pipefail
+        exec /usr/bin/env -i PATH=/usr/bin:/bin \
+          RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
+          GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:?}" GITHUB_ACTION_PATH="${GITHUB_ACTION_PATH:?}" \
+          EVENT="${EVENT}" REPOSITORY="${REPOSITORY}" REPOSITORY_ID="${REPOSITORY_ID}" REF="${REF}" SHA="${SHA}" \
+          GIT_BASE="${GIT_BASE}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH}/admit-step.sh"

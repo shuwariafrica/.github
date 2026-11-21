@@ -1,0 +1,108 @@
+name: Publish a crate release
+description: >-
+  Publishes a public crate's signed release to crates.io by trusted publishing, in its release job
+  behind the release gate, with curl, jq and gpg alone: nothing of cargo or the project. Its inputs
+  are the run's own artefacts, downloaded by id, never the GitHub release. Before any token it holds
+  SHA256SUMS to crate-package's digest and every file to SHA256SUMS; verifies SHA256SUMS.asc in a
+  new GnuPG home holding public-crates' signing-keys/<repository>.asc alone, read at main's head
+  and held to projects.json's signing_key, requiring one good signature by a key that neither
+  keys.openpgp.org nor keyserver.ubuntu.com publishes as revoked (a keyserver that does not answer
+  refuses); refuses a crate
+  crate-admit did not admit, and an upload body whose `.crate` is not the signed one. Then, in the
+  signed order: a crate crates.io's index holds at the version with the signed digest is skipped;
+  with another digest the job fails; a crate crates.io does not hold fails the job, its summary
+  naming what the owner's act for a first publication takes, and holding no line to run; one not
+  bound to trusted publishing alone, or
+  with owners other than projects.json's crates_io_owners, fails it. Otherwise one step exchanges
+  the job's OIDC token for a crates.io token, masks it, uploads each body in order, waiting for the
+  index between, and revokes the token as it ends. The job needs `permissions: id-token: write`.
+inputs:
+  directory:
+    description: >-
+      The directory holding crate-package's files and crate-sign's SHA256SUMS.asc, each downloaded
+      by its artefact's id.
+    required: true
+  digest:
+    description: crate-package's `digest` output.
+    required: true
+  version:
+    description: crate-admit's `version` output.
+    required: true
+  crates:
+    description: crate-admit's `crates` output.
+    required: true
+runs:
+  using: composite
+  steps:
+    # Each step runs as release-key's do. The shell is the image's bash in POSIX mode, so no
+    # function a caller exports (BASH_FUNC_<name>%%) can stand for `set`, `exec` or `:`; env -i
+    # then hands the script only the variables named, and a token goes on descriptor 3, never into
+    # an argument list. Every value is the step's own env, which the runner merges last. Each of
+    # the last eleven sets aside what bash, glibc or the loader reads before the script's first
+    # line; LC_ALL=C also keeps glibc from loading a character-set converter as bash starts.
+    - name: The files, their signature and each crate on crates.io
+      id: check
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        REPOSITORY: ${{ github.repository }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        REF: ${{ github.ref }}
+        RUN_ID: ${{ github.run_id }}
+        DIRECTORY: ${{ inputs.directory }}
+        DIGEST: ${{ inputs.digest }}
+        VERSION: ${{ inputs.version }}
+        CRATES: ${{ inputs.crates }}
+        GIT_BASE: https://github.com
+        CRATES_IO: https://crates.io
+        INDEX: https://index.crates.io
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
+      run: |
+        set -euo pipefail
+        exec /usr/bin/env -i PATH=/usr/bin:/bin \
+          RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
+          GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:?}" GITHUB_ACTION_PATH="${GITHUB_ACTION_PATH:?}" \
+          REPOSITORY="${REPOSITORY}" REPOSITORY_ID="${REPOSITORY_ID}" REF="${REF}" RUN_ID="${RUN_ID}" DIRECTORY="${DIRECTORY}" \
+          DIGEST="${DIGEST}" VERSION="${VERSION}" CRATES="${CRATES}" GIT_BASE="${GIT_BASE}" \
+          CRATES_IO="${CRATES_IO}" INDEX="${INDEX}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH}/check-step.sh"
+    - name: Publish
+      if: steps.check.outputs.publish != '[]'
+      shell: /usr/bin/bash --posix --noprofile --norc -e -o pipefail {0}
+      env:
+        DIRECTORY: ${{ inputs.directory }}
+        DIGEST: ${{ inputs.digest }}
+        VERSION: ${{ inputs.version }}
+        PUBLISH: ${{ steps.check.outputs.publish }}
+        CRATES_IO: https://crates.io
+        INDEX: https://index.crates.io
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        PS4: "+ "
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        GCONV_PATH: ""
+        LC_ALL: C
+        BASH_COMPAT: ""
+      run: |
+        set -euo pipefail
+        exec 3<<TOKEN
+        ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}
+        TOKEN
+        exec /usr/bin/env -i PATH=/usr/bin:/bin RUNNER_TEMP="${RUNNER_TEMP:?}" \
+          ACTIONS_ID_TOKEN_REQUEST_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+          DIRECTORY="${DIRECTORY}" DIGEST="${DIGEST}" VERSION="${VERSION}" PUBLISH="${PUBLISH}" \
+          CRATES_IO="${CRATES_IO}" INDEX="${INDEX}" \
+          /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/publish-step.sh"

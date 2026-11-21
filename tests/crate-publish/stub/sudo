@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stands in for sudo in sqv.sh's case: records its words in STUB/sudo and runs the command after
+# -n as the caller, whose destination is the case's own.
+set -euo pipefail
+: "${STUB:?}"
+printf '%s\n' "$*" >>"${STUB}/sudo"
+[[ $1 == -n ]] || exit 1
+shift
+exec "$@"

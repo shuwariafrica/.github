@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stands in for gh in owner-publish.sh's cases. `gh run download <run> --repo <repository> --name
+# <name> --dir <dir>` copies STUB/artifacts/<run>/<name>/ into <dir>, as gh extracts one artefact
+# there; `gh api repos/<repository> --jq .id` prints STUB/repository-id. Anything else fails.
+# Records each call's words in STUB/gh.
+set -euo pipefail
+shopt -s inherit_errexit
+: "${STUB:?}"
+printf '%s\n' "$*" >>"${STUB}/gh"
+case "${1:-} ${2:-}" in
+  'run download')
+    run=$3 name='' dir=''
+    shift 3
+    while (($# > 0)); do
+      case $1 in
+        --name) name=$2 && shift ;;
+        --dir) dir=$2 && shift ;;
+        --repo) shift ;;
+        *) ;;
+      esac
+      shift
+    done
+    [[ -d ${STUB}/artifacts/${run}/${name} && -n ${dir} ]] || {
+      printf 'no artifact %s in run %s\n' "${name}" "${run}" >&2
+      exit 1
+    }
+    mkdir -p -- "${dir}"
+    cp -- "${STUB}/artifacts/${run}/${name}"/* "${dir}/"
+    ;;
+  'api repos/'*) cat -- "${STUB}/repository-id" ;;
+  *) exit 1 ;;
+esac

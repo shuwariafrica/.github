@@ -1,7 +1,8 @@
 name: Release key
 description: >-
-  Reads C1's subkey-only export from Key Vault as the `release` environment's federated identity,
-  imports it into a new GNUPGHOME and proves its primary is the published fingerprint. A later
+  Reads a subkey-only export from Key Vault as the `release` environment's federated identity,
+  C1's by default, imports it into a new GNUPGHOME and proves its primary is the published
+  fingerprint. A later
   step that signs names that home (`env: GNUPGHOME: steps.<id>.outputs.gnupghome`); `sign` signs
   the files named, each signature naming this run's repository id and ref
   (`repository-ref@shuwari.africa`), and verifies each under gpg and sqv. The job needs
@@ -17,8 +18,12 @@ inputs:
     description: The subkey's vault URI.
     required: true
   fingerprint:
-    description: C1's published primary fingerprint.
+    description: The published primary fingerprint the export's key must have; C1's for C1's export.
     required: true
+  secret:
+    description: The vault's secret holding the subkey-only export.
+    required: false
+    default: c1-subkey
   sign:
     description: Files to sign, one per line; none when the build signs through gpg itself.
     required: false
@@ -47,6 +52,7 @@ runs:
         CLIENT_ID: ${{ inputs.client-id }}
         VAULT_URL: ${{ inputs.vault-url }}
         FINGERPRINT: ${{ inputs.fingerprint }}
+        SECRET: ${{ inputs.secret }}
         BASH_ENV: ""
         ENV: ""
         SHELLOPTS: ""
@@ -67,6 +73,7 @@ runs:
           RUNNER_TEMP="${RUNNER_TEMP:?}" GITHUB_OUTPUT="${GITHUB_OUTPUT:?}" \
           ACTIONS_ID_TOKEN_REQUEST_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
           TENANT_ID="${TENANT_ID}" CLIENT_ID="${CLIENT_ID}" VAULT_URL="${VAULT_URL}" FINGERPRINT="${FINGERPRINT}" \
+          SECRET="${SECRET}" \
           /usr/bin/bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/import-step.sh"
     - name: Sign
       if: inputs.sign != ''

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Stands in for curl in the crate-* actions' cases. Serves each request from STUB/routes, lines of
+# `<method> <url><TAB><status><TAB><body file>`, the first that matches; the URL is the one given,
+# without what --get adds. An unrouted request answers 599, and a status of 000 is no answer:
+# nothing is written and the exit is 7, as curl's for a refused connection. Writes the body to
+# --output and the status for --write-out '%{http_code}'; with --fail or --fail-with-body exits 22
+# on a status of 400 or more. Refuses, as curl exiting 2, a request to crates.io or its index
+# without the User-Agent crates.io's policy asks for. Records each call in STUB/calls
+# (`<nanoseconds><TAB><method><TAB><url>`), its words in STUB/argv (one line, `|` between them),
+# every header file and header in STUB/headers, a header read from standard input in STUB/stdin,
+# and a body sent from a file in STUB/sent.<call number>.
+set -euo pipefail
+shopt -s inherit_errexit
+readonly WANT='shuwariafrica-crate-release (https://github.com/shuwariafrica/.github)'
+: "${STUB:?}"
+out='' format='' url='' agent='' method='' fail=0 data='' get=0
+words=("$@")
+printf '%s\n' "${words[*]//$'\n'/ }" | tr ' ' '|' >>"${STUB}/argv"
+while (($# > 0)); do
+  case $1 in
+    --output) out=$2 && shift ;;
+    --write-out) format=$2 && shift ;;
+    --user-agent) agent=$2 && shift ;;
+    --request) method=$2 && shift ;;
+    --data | --data-binary) data=$2 && shift ;;
+    --data-urlencode) shift ;;
+    --get) get=1 ;;
+    --max-time) shift ;;
+    --header | -H)
+      if [[ $2 == @- ]]; then
+        cat >>"${STUB}/stdin"
+      elif [[ $2 == @* ]]; then
+        cat -- "${2#@}" >>"${STUB}/headers"
+      else
+        printf '%s\n' "$2" >>"${STUB}/headers"
+      fi
+      shift
+      ;;
+    --fail | --fail-with-body) fail=1 ;;
+    --silent | --show-error | --location) ;;
+    -*) ;;
+    *) url=$1 ;;
+  esac
+  shift
+done
+if [[ -z ${method} ]]; then
+  method=GET
+  [[ ${get} == 1 || -z ${data} ]] || method=POST
+fi
+now=$(date +%s%N)
+printf '%s\t%s\t%s\n' "${now}" "${method}" "${url}" >>"${STUB}/calls"
+count=$(wc -l <"${STUB}/calls")
+[[ -z ${data} || ${data} != @* ]] || cp -- "${data#@}" "${STUB}/sent.${count}"
+if [[ ${url} =~ ^https://(index\.)?crates\.io/ && ${agent} != "${WANT}" ]]; then
+  printf 'stub curl: %s sent no User-Agent of the release'"'"'s\n' "${url}" >&2
+  exit 2
+fi
+route=$(awk -F'\t' -v k="${method} ${url}" '$1 == k {print $2 "\t" $3; exit}' "${STUB}/routes")
+status=${route%%$'\t'*}
+body=${route#*$'\t'}
+[[ -n ${route} ]] || {
+  status=599
+  body=/dev/null
+}
+if [[ ${status} == 000 ]]; then
+  [[ ${format} != '%{http_code}' ]] || printf '000'
+  exit 7
+fi
+if [[ -n ${out} ]]; then
+  cat -- "${body}" >"${out}"
+else
+  cat -- "${body}"
+fi
+[[ ${format} != '%{http_code}' ]] || printf '%s' "${status}"
+if ((fail == 1 && status >= 400)); then
+  exit 22
+fi

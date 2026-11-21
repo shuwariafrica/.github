@@ -177,9 +177,10 @@ case_verify_function_tool() {
   expect "${d}" 70 'sqv does not verify'
 }
 
-# The stand-in answers the OIDC request, Entra's token grant and Key Vault's Get Secret, each only for
-# the credential the step before it handed on.
-standin_curl() { # case directory, the subkey-only export
+# The stand-in answers the OIDC request, Entra's token grant and Key Vault's Get Secret of the secret
+# named (c1-subkey by default), each only for the credential the step before it handed on.
+standin_curl() { # case directory, the subkey-only export, the secret's name
+  local secret=${3:-c1-subkey}
   mkdir -p "$1/bin"
   jq -Rs '{value: .}' "$2" >"$1/secret.json"
   cat >"$1/bin/curl" <<CURL
@@ -201,18 +202,20 @@ if [[ \${url} == https://token.example/* ]]; then
 elif [[ \${post} == yes ]]; then
   printf '{"access_token": "vault-token"}\n'
 else
-  [[ \$(<"\${header}") == 'Authorization: Bearer vault-token' && \${url} == https://release.vault.azure.net/secrets/c1-subkey?* ]]
+  [[ \$(<"\${header}") == 'Authorization: Bearer vault-token' && \${url} == https://release.vault.azure.net/secrets/${secret}?* ]]
   cat '$1/secret.json'
 fi
 CURL
   chmod 755 "$1/bin/curl"
 }
 
-import_step() { # case directory, request token (empty for none on descriptor 3)
+import_step() { # case directory, request token (empty for none on descriptor 3), SECRET=<name> or nothing
   local status=0 primary
+  local -a secret=()
   primary=$(fingerprint c1)
+  [[ -z ${3:-} ]] || secret=("$3")
   if [[ -n $2 ]]; then
-    env -i PATH="$1/bin:/usr/bin:/bin" TENANT_ID=tenant CLIENT_ID=client VAULT_URL=https://release.vault.azure.net \
+    env -i PATH="$1/bin:/usr/bin:/bin" "${secret[@]}" TENANT_ID=tenant CLIENT_ID=client VAULT_URL=https://release.vault.azure.net \
       FINGERPRINT="${primary}" RUNNER_TEMP="$1/temp" GITHUB_OUTPUT="$1/output" \
       ACTIONS_ID_TOKEN_REQUEST_URL=https://token.example/request \
       bash --noprofile --norc "${tree}/actions/release-key/import-step.sh" 3<<<"$2" >"$1/stdout" 2>"$1/stderr" || status=$?
@@ -258,6 +261,41 @@ case_import_no_token() {
   import_step "${d}" ''
   expect "${d}" 64 'no OIDC request token on descriptor 3'
   [[ ! -s ${d}/output ]] || fail "GITHUB_OUTPUT holds $(<"${d}/output")"
+}
+
+# The secret the action's `secret` input names is the one read: a project's key, here C1's own
+# made again, in its vault's secret `subkey`.
+case_import_a_secret_named() {
+  local d fpr default
+  d=$(fresh import_secret_named)
+  fpr=$(fingerprint c1)
+  g c1 --armor --export-secret-subkeys >"${d}/export.asc"
+  standin_curl "${d}" "${d}/export.asc" subkey
+  import_step "${d}" request-token SECRET=subkey
+  expect "${d}" 0 "release key: subkey ${fpr}, signing subkey ${sub_c1}"
+  default=$(yq -r '.inputs.secret.default' "${tree}/actions/release-key/action.yml")
+  [[ ${default} == c1-subkey ]] || fail "the secret input defaults to ${default}"
+}
+
+# published.sh over a keyserver: one that holds nothing for the key leaves nothing; one that does
+# not answer (127.0.0.1:1 refuses at once) refuses.
+case_published_refuses_a_keyserver_that_does_not_answer() {
+  local d status=0 fpr
+  d=$(fresh published)
+  fpr=$(fingerprint c1)
+  g c1 --armor --export "${fpr}" >"${d}/c1.asc"
+  mkdir -p "${d}/bin" "${d}/published" "${d}/silent"
+  printf '#!/usr/bin/env bash\nprintf 404\n' >"${d}/bin/curl"
+  chmod 755 "${d}/bin/curl"
+  env -i PATH="${d}/bin:/usr/bin:/bin" bash --noprofile --norc "${tree}/actions/release-key/published.sh" "${d}/c1.asc" \
+    "${d}/published" https://hkp.example https://vks.example >"${d}/stdout" 2>"${d}/stderr" || status=$?
+  printf '%s\n' "${status}" >"${d}/status"
+  expect "${d}" 0 "published for ${fpr}: 0 files"
+  status=0
+  env -i PATH=/usr/bin:/bin bash --noprofile --norc "${tree}/actions/release-key/published.sh" "${d}/c1.asc" \
+    "${d}/silent" http://127.0.0.1:1 http://127.0.0.1:1 >"${d}/stdout" 2>"${d}/stderr" || status=$?
+  printf '%s\n' "${status}" >"${d}/status"
+  expect "${d}" 75 'did not answer for'
 }
 
 mkdir -p "${work}/keys" "${work}/cases"
